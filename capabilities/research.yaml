@@ -1,0 +1,9 @@
+name: research
+kind: practice
+description: Search, source verification, synthesis, briefs
+skills: []
+plugins: []
+guidance: |
+  - Cite sources with links. Distinguish what a source says from your inference.
+  - Prefer primary sources; note publication dates (this field moves fast).
+  - State confidence honestly. "I couldn't verify X" is a valid finding.

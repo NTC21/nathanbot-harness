@@ -1,0 +1,9 @@
+name: typescript
+kind: language
+description: TypeScript/JavaScript conventions, tooling, type discipline
+skills: []
+plugins: []
+guidance: |
+  - Strict TS. No `any` without a comment explaining why.
+  - Verify with `tsc --noEmit` before considering work done.
+  - Match the file's existing import style and module conventions.

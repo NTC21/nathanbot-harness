@@ -1,0 +1,27 @@
+{
+  "_comment": "Path -> composed capability layers. Per-subrepo granularity. Paths are relative to ${CODE_ROOT}. Longest matching path wins, so a workspace default can be overridden per subrepo.",
+  "_schema": "capabilities are files in capabilities/<name>.yaml — compose freely, order doesn't matter",
+  "paths": {
+    "MyApp": {
+      "capabilities": ["typescript"],
+      "_note": "workspace default — subrepos below override"
+    },
+    "MyApp/mobile": {
+      "capabilities": ["typescript", "expo", "ui-design", "react"]
+    },
+    "MyApp/landing": {
+      "capabilities": ["typescript", "nextjs", "ui-design", "react", "tailwind"]
+    },
+    "MyApp/infrastructure": {
+      "capabilities": ["typescript", "aws-lambda", "database-migrations", "auth"]
+    },
+    "MyApp/ops": {
+      "capabilities": ["business-ops"]
+    }
+  },
+  "universal": {
+    "_comment": "Loaded everywhere. Keep this list SHORT — it is the thing that pollutes every session.",
+    "plugins": [],
+    "skills": []
+  }
+}

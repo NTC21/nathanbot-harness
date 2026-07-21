@@ -1,0 +1,44 @@
+{
+  "_comment": "What the system may do without asking. Copy to permissions.json. Enforced in code, not just documented — change a value and it takes effect immediately, no restart.",
+  "_levels": {
+    "always": "allowed without asking",
+    "ask": "must request permission each time and get an explicit yes",
+    "never": "refused outright, even if asked mid-task (change this file instead)"
+  },
+
+  "email": {
+    "read_subjects": { "level": "always", "_note": "Sender, subject, date, labels. Safe — no message content." },
+    "read_bodies": { "level": "ask", "_note": "Full message content. Must request and get a yes each time." },
+    "search": { "level": "always", "_note": "Querying the mailbox returns subjects/metadata only." },
+    "draft": { "level": "always", "_note": "Creating a draft is safe — drafts do not send. You review before anything leaves." },
+    "send": { "level": "ask", "_note": "NEVER automatic. Requires explicit confirmation of the final text AND the sending account. Enforced in code: send takes a draft id only and --yes must restate the account." },
+    "reply": { "level": "ask", "_note": "Same as send — a reply is an outbound message." },
+    "modify_labels": { "level": "ask", "_note": "Labeling/archiving changes your mailbox state. Reversible, but still your call." },
+    "delete": { "level": "never", "_note": "Never delete email. Not recoverable enough to risk." }
+  },
+
+  "calendar": {
+    "read": { "level": "always" },
+    "create_event": { "level": "ask", "_note": "Invites notify other people — same weight as sending email." },
+    "modify_event": { "level": "ask" },
+    "delete_event": { "level": "never" }
+  },
+
+  "files": {
+    "read": { "level": "always" },
+    "write_in_project": { "level": "always", "_note": "Bounded by config/projects.json autonomy levels." },
+    "delete": { "level": "ask", "_note": "Verify pushed state and untracked files first — git diff misses untracked." }
+  },
+
+  "git": {
+    "commit": { "level": "always" },
+    "push": { "level": "ask", "_note": "Also bounded per-project by config/projects.json (auto-merge / auto-pr / review-required)." },
+    "force_push": { "level": "never" }
+  },
+
+  "external": {
+    "web_search": { "level": "always" },
+    "publish_public_content": { "level": "ask", "_note": "Social posts, uploads, anything visible to others." },
+    "purchase": { "level": "never" }
+  }
+}

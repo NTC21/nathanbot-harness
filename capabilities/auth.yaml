@@ -1,0 +1,8 @@
+name: auth
+kind: domain
+description: Cognito, sessions, tokens, SIWA
+skills: []
+plugins: []
+guidance: |
+  - Refresh-token handling is where auth bugs hide — test expiry paths.
+  - Never log tokens. Never put them in URLs.

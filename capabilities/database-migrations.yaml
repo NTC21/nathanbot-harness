@@ -1,0 +1,9 @@
+name: database-migrations
+kind: domain
+description: Versioned schema migrations
+skills: []
+plugins: []
+guidance: |
+  - Migrations are append-only. Never edit an applied migration; write a new one.
+  - Every migration needs a tested rollback path.
+  - Additive first (add column nullable -> backfill -> enforce) to avoid downtime.

@@ -1,0 +1,12 @@
+name: ui-design
+kind: practice
+description: Visual design, Tailwind, shadcn, component systems
+skills:
+  - shadcn
+  - web-perf
+plugins:
+  - frontend-design
+guidance: |
+  - Design tokens over magic values. Reuse the existing scale.
+  - Every interactive element needs hover/focus/disabled/loading states.
+  - Check dark mode and mobile before calling UI work done.

@@ -1,0 +1,9 @@
+name: aws-lambda
+kind: platform
+description: AWS SAM, Lambda, API Gateway, DynamoDB
+skills: []
+plugins: []
+guidance: |
+  - SAM template is the source of truth for infra; update it with the handler.
+  - Cold starts matter — keep imports lean, reuse clients across invocations.
+  - IAM: least privilege. Never wildcard resources in production policies.

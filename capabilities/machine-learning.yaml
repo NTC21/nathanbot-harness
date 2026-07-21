@@ -1,0 +1,9 @@
+name: machine-learning
+kind: domain
+description: Model training, inference, data pipelines, evals
+skills: []
+plugins: []
+guidance: |
+  - Pin dataset + model versions; unversioned experiments are unreproducible.
+  - Write the eval BEFORE tuning, or you're optimizing on vibes.
+  - Separate data prep / train / infer — don't fuse them in one script.

@@ -1,0 +1,10 @@
+name: payments
+kind: domain
+description: Stripe, payment flows, refunds, holds
+skills: []
+plugins: []
+guidance: |
+  - Money bugs are not recoverable. Verify amounts and currency units explicitly
+    (Stripe is cents; some SDKs are not).
+  - Idempotency keys on every charge/refund call.
+  - Never log full payment payloads.

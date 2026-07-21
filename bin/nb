@@ -1,0 +1,616 @@
+#!/usr/bin/env bash
+# nb — nathanbot CLI. One namespace for everything.
+#
+#   nb add "<idea>"        capture an idea (zero friction, never blocks)
+#   nb inbox               show raw uncaptured inbox
+#   nb triage              AI sorts inbox -> structured tasks
+#   nb next                what to work on now
+#   nb status              what's open / in flight / blocked
+#   nb plan "<goal>"       decompose a big goal into tasks
+#   nb run [--dry-run]     execute ready tasks (parallel, isolated per project)
+#   nb done <id>           mark a task complete
+#   nb decide [id]         resolve needs-decision items (approve/defer/drop)
+#   nb groom [--apply]     archive stale tasks so the queue does not rot
+#   nb discuss ["topic"]   talk freely; it interviews you and absorbs what it learns
+#
+#   nb brief               daily briefing — what's next, what's waiting, system health
+#   nb evolve              improve the SYSTEM — analyze own usage, propose fixes
+#   nb learn               improve the model of YOU — analyze your decisions, propose memory
+#   nb scout               research new tools/systems worth adopting
+#   nb tidy [--apply]      machine maintenance: caches, dormant deps, uncommitted work
+#
+#   nb audit               self-heal check on the memory system
+#   nb new <name> [--type] scaffold a new project
+#   nb ui                  open the local dashboard (http://127.0.0.1:7777)
+#   nb sync                commit + push nathanbot
+#   nb schedule install    make it ambient (launchd: brief daily, evolve+tidy weekly)
+#   nb profile <cmd>       capability layers per project (list|show|apply|sync|check)
+#   nb mail <cmd>          gmail: login|status|search|read|draft|send (--account required)
+#   nb perms [set k lvl]   what Claude may do without asking (enforced in code)
+#
+set -uo pipefail
+
+R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INBOX="$R/tasks/inbox.md"
+OPEN="$R/tasks/open"
+DONE="$R/tasks/done"
+mkdir -p "$OPEN" "$DONE"
+[ -f "$INBOX" ] || printf '# Inbox\n\nDump raw ideas here, one per line. Run `nb triage` to file them.\n\n' > "$INBOX"
+
+c_b=$'\033[1m'; c_d=$'\033[2m'; c_g=$'\033[32m'; c_y=$'\033[33m'; c_r=$'\033[31m'; c_0=$'\033[0m'
+
+die() { printf "${c_r}%s${c_0}\n" "$1" >&2; exit 1; }
+
+next_id() {
+  local n=0 f
+  for f in "$OPEN"/*.md "$DONE"/*.md; do
+    [ -e "$f" ] || continue
+    local i="${f##*/t-}"; i="${i%%-*}"; i="${i%.md}"
+    [[ "$i" =~ ^[0-9]+$ ]] && [ "$i" -gt "$n" ] && n="$i"
+  done
+  printf "%04d" $((n+1))
+}
+
+# ── capture ──────────────────────────────────────────────────────────────────
+cmd_add() {
+  [ $# -gt 0 ] || die "usage: nb add \"your idea\""
+  printf -- '- [ ] %s  <!-- %s -->\n' "$*" "$(date +%Y-%m-%d)" >> "$INBOX"
+  printf "${c_g}captured${c_0}\n"
+  # auto-file it into a real task in the background — no manual triage step.
+  # Opt out with NB_NO_AUTOTRIAGE=1. Needs claude on PATH.
+  if [ -z "${NB_NO_AUTOTRIAGE:-}" ] && command -v claude >/dev/null 2>&1; then
+    ( _autotriage ) >/dev/null 2>&1 &
+  fi
+  return 0
+}
+
+# Background, lock-guarded, debounced triage. A burst of captures coalesces into
+# one triage run; concurrent adds are safe because triage only clears what it saw.
+_autotriage() {
+  local lock="$R/tasks/.triage.lock"
+  # steal a stale lock left by a crashed run (>5 min old) so triage never wedges
+  if [ -d "$lock" ]; then
+    local age; age=$(( $(date +%s) - $(stat -f %m "$lock" 2>/dev/null || echo 0) ))
+    [ "$age" -gt 300 ] && rmdir "$lock" 2>/dev/null
+  fi
+  mkdir "$lock" 2>/dev/null || return 0    # mkdir is atomic — one triage at a time
+  # literal path in the trap (the local is out of scope by the time EXIT fires)
+  trap 'rmdir "'"$lock"'" 2>/dev/null' EXIT INT TERM
+  sleep 4                                  # debounce: let a burst settle
+  "$0" triage >/dev/null 2>&1 || true
+  rmdir "$lock" 2>/dev/null
+}
+
+cmd_inbox() {
+  local n; n=$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)
+  printf "${c_b}Inbox (%s untriaged)${c_0}\n" "$n"
+  grep '^- \[ \]' "$INBOX" 2>/dev/null | sed 's/<!--.*-->//' | sed 's/^- \[ \]/  •/' || printf "  ${c_d}empty${c_0}\n"
+}
+
+# ── triage: AI files raw ideas into structured tasks ─────────────────────────
+cmd_triage() {
+  local n; n=$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)
+  [ "$n" -eq 0 ] && { printf "${c_d}inbox empty — nothing to triage${c_0}\n"; return 0; }
+  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+
+  # snapshot EXACTLY the items we're triaging — anything captured during triage survives
+  local snap; snap=$(mktemp)
+  grep '^- \[ \]' "$INBOX" > "$snap"
+
+  printf "${c_b}Triaging %s item(s)...${c_0}\n" "$n"
+  local prompt
+  prompt=$(cat <<EOF
+You are triaging the owner's idea inbox for nathanbot.
+
+CONTEXT — read these first for conventions, projects, and hard rules:
+- $R/shared-memory/OVERVIEW.md
+- $R/config/projects.json  (valid project names + autonomy levels)
+
+RAW INBOX ITEMS:
+$(sed 's/<!--.*-->//' "$snap")
+
+For EACH item, create one file at $OPEN/t-<NNNN>-<slug>.md starting at id $(next_id),
+incrementing. Use this exact frontmatter:
+
+---
+id: t-NNNN
+title: <clear actionable title>
+domain: coding|content|research|language|ops
+project: <a key from config/projects.json, or "none">
+status: ready|blocked|needs-decision
+priority: 1..5   (1 = do first)
+autonomy: inherit
+created: $(date +%Y-%m-%d)
+---
+
+Then a short body: what "done" looks like, and any first step.
+
+RULES:
+- If an item is vague, set status: needs-decision and write what you'd need to know.
+- If it depends on something else, set status: blocked and say what blocks it.
+- Never invent a project name that isn't in config/projects.json.
+- Prefer small, independently executable tasks. Split anything that isn't.
+
+Do NOT modify $INBOX — the CLI clears it after you finish.
+Report a one-line summary per task created.
+EOF
+)
+  local before; before=$(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ')
+  claude -p "$prompt" --permission-mode acceptEdits 2>&1 | tail -30
+  local after; after=$(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ')
+
+  # State mutation happens HERE, in bash — and only if tasks were actually created.
+  if [ "$after" -gt "$before" ]; then
+    local arch="$R/tasks/.inbox-archive.md"
+    { printf '\n## triaged %s\n' "$(date +%Y-%m-%d\ %H:%M)"; cat "$snap"; } >> "$arch" 2>/dev/null
+    # remove EXACTLY the processed lines — keep the header + anything added during triage
+    local tmp; tmp=$(mktemp)
+    grep -vxF -f "$snap" "$INBOX" > "$tmp" && mv "$tmp" "$INBOX"
+    printf "\n${c_g}triage complete${c_0} — %s task(s) created\n" "$((after-before))"
+  else
+    printf "\n${c_y}no tasks created — inbox left intact${c_0}\n"
+  fi
+  rm -f "$snap"
+}
+
+# ── read task frontmatter ────────────────────────────────────────────────────
+_fm() { grep -m1 "^$2:" "$1" 2>/dev/null | sed "s/^$2:[[:space:]]*//"; }
+
+cmd_next() {
+  printf "${c_b}Next up${c_0}\n"
+  local found=0
+  for p in 1 2 3 4 5; do
+    for f in "$OPEN"/*.md; do
+      [ -e "$f" ] || continue
+      [ "$(_fm "$f" priority)" = "$p" ] || continue
+      [ "$(_fm "$f" status)" = "ready" ] || continue
+      printf "  ${c_g}P%s${c_0} %-10s %-16s %s\n" "$p" "$(_fm "$f" id)" "[$(_fm "$f" project)]" "$(_fm "$f" title)"
+      found=$((found+1))
+      [ "$found" -ge 8 ] && break 2
+    done
+  done
+  [ "$found" -eq 0 ] && printf "  ${c_d}nothing ready — 'nb inbox' or 'nb triage'${c_0}\n"
+  return 0
+}
+
+cmd_status() {
+  local ready=0 blocked=0 decide=0 running=0 done_n=0
+  for f in "$OPEN"/*.md; do
+    [ -e "$f" ] || continue
+    case "$(_fm "$f" status)" in
+      ready) ready=$((ready+1)) ;; blocked) blocked=$((blocked+1)) ;;
+      needs-decision) decide=$((decide+1)) ;; running) running=$((running+1)) ;;
+    esac
+  done
+  for f in "$DONE"/*.md; do [ -e "$f" ] && done_n=$((done_n+1)); done
+  printf "${c_b}Status${c_0}\n"
+  printf "  ${c_g}ready${c_0}          %s\n" "$ready"
+  printf "  ${c_y}running${c_0}        %s\n" "$running"
+  printf "  ${c_y}blocked${c_0}        %s\n" "$blocked"
+  printf "  ${c_r}needs decision${c_0} %s\n" "$decide"
+  printf "  ${c_d}done${c_0}           %s\n" "$done_n"
+  printf "  ${c_d}inbox untriaged %s${c_0}\n" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)"
+
+  if [ "$decide" -gt 0 ]; then
+    printf "\n${c_r}Waiting on you:${c_0}\n"
+    for f in "$OPEN"/*.md; do
+      [ -e "$f" ] || continue
+      [ "$(_fm "$f" status)" = "needs-decision" ] && printf "  • %s %s\n" "$(_fm "$f" id)" "$(_fm "$f" title)"
+    done
+  fi
+  return 0
+}
+
+# ── plan: decompose a goal ───────────────────────────────────────────────────
+cmd_plan() {
+  [ $# -gt 0 ] || die "usage: nb plan \"the big thing you want\""
+  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  printf "${c_b}Planning:${c_0} %s\n" "$*"
+  claude -p "Decompose this goal into independently executable tasks for the owner's nathanbot system.
+
+GOAL: $*
+
+Read $R/shared-memory/OVERVIEW.md and $R/config/projects.json first.
+
+Create task files in $OPEN/ starting at id $(next_id), same frontmatter format as existing
+files there (see any t-*.md). Rules:
+- Each task must be independently runnable in ONE project (never cross projects).
+- Order via priority (1 = first). Use status: blocked + note the dependency where real.
+- Prefer 3-8 tasks. If the goal needs more, make the first task a deeper planning task.
+Report the plan as a numbered list." --permission-mode acceptEdits 2>&1 | tail -30
+}
+
+# ── run: execute ready tasks, isolated per project ───────────────────────────
+cmd_run() {
+  local dry=false; [ "${1:-}" = "--dry-run" ] && dry=true
+  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  local max; max=$(python3 -c "import json;print(json.load(open('$R/config/projects.json'))['defaults']['max_concurrent'])" 2>/dev/null || echo 4)
+
+  local tasks=()
+  for f in "$OPEN"/*.md; do
+    [ -e "$f" ] || continue
+    [ "$(_fm "$f" status)" = "ready" ] && tasks+=("$f")
+  done
+  [ ${#tasks[@]} -eq 0 ] && { printf "${c_d}no ready tasks${c_0}\n"; return 0; }
+
+  printf "${c_b}Running %s task(s), max %s concurrent${c_0}\n" "${#tasks[@]}" "$max"
+  local running=0
+  for f in "${tasks[@]}"; do
+    local id proj auto path
+    id=$(_fm "$f" id); proj=$(_fm "$f" project)
+    auto=$(python3 -c "
+import json,os
+c=json.load(open('$R/config/projects.json'))
+p=c['projects'].get('$proj')
+print(p['autonomy'] if p else c['defaults']['autonomy'])" 2>/dev/null || echo auto-pr)
+    path=$(python3 -c "
+import json,os
+c=json.load(open('$R/config/projects.json'))
+p=c['projects'].get('$proj')
+print(os.path.expandvars(p['path']).replace('\${CODE_ROOT}', os.path.expanduser('~/Projects')) if p else '')" 2>/dev/null)
+
+    printf "  %-10s [%s] ${c_d}%s${c_0} → %s\n" "$id" "$proj" "$auto" "$(_fm "$f" title)"
+    $dry && continue
+
+    ( CODE_ROOT="$HOME/Projects" \
+      claude -p "$(cat "$f")
+
+You are executing ONE task for the owner.
+
+PROJECT: $proj   PATH: $path   AUTONOMY: $auto
+
+Read first: $R/shared-memory/OVERVIEW.md, $R/workspace-coding/MEMORY.md,
+and that project's own CLAUDE.md if present.
+
+AUTONOMY RULES — these are absolute:
+- review-required : implement, then STOP. Do not push. Report what you'd push.
+- auto-pr         : implement, open a PR. Never merge.
+- auto-merge      : implement, verify, may merge to main if checks pass.
+Never act outside $path. Never touch another project.
+
+When finished, append 2-5 summary lines to the right nathanbot workspace dated note
+per the write-back contract in $R/AGENTS.md." \
+      --permission-mode acceptEdits > "$R/tasks/.log-$id.txt" 2>&1
+      rc=$?
+      if [ "$rc" -eq 0 ]; then
+        sed -i '' 's/^status: ready/status: done/' "$f" 2>/dev/null
+        mv "$f" "$DONE/" 2>/dev/null
+      else
+        # FAILED: keep the task open and mark it, never file as complete
+        sed -i '' 's/^status: ready/status: failed/' "$f" 2>/dev/null
+        printf '\nlast-run: FAILED rc=%s see tasks/.log-%s.txt\n' "$rc" "$id" >> "$f"
+      fi
+    ) &
+    running=$((running+1))
+    [ "$running" -ge "$max" ] && { wait -n 2>/dev/null || wait; running=$((running-1)); }
+  done
+  $dry && { printf "${c_d}(dry run — nothing executed)${c_0}\n"; return 0; }
+  wait
+  printf "${c_g}run complete${c_0} — logs in tasks/.log-*.txt\n"
+}
+
+cmd_done() {
+  [ $# -gt 0 ] || die "usage: nb done <id>"
+  local f; f=$(ls "$OPEN"/*"$1"*.md 2>/dev/null | head -1)
+  [ -z "$f" ] && die "no open task matching '$1'"
+  _log_decision "$f" complete
+  sed -i '' 's/^status: .*/status: done/' "$f" 2>/dev/null
+  mv "$f" "$DONE/"
+  printf "${c_g}done${c_0} %s\n" "$(basename "$f")"
+}
+
+# ── decision journal: every choice the owner makes becomes signal ───────────────
+_log_decision() {
+  local f="$1" action="$2"
+  # canonical action vocabulary (UI passes target status; CLI passes the verb)
+  case "$action" in
+    ready)   action=approve ;;
+    blocked) action=defer ;;
+    done)    action=resolve ;;
+  esac
+  local jf="$R/tasks/.decisions.jsonl"
+  python3 - "$f" "$action" "$jf" <<'PYEOF'
+import json, sys, re, datetime, os
+f, action, jf = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    t = open(f).read()
+except Exception:
+    sys.exit(0)
+fm = {}
+m = re.search(r"^---\n(.*?)\n---", t, re.S)
+if m:
+    for line in m.group(1).splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            fm[k.strip()] = v.strip()
+rec = {
+    "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+    "action": action,
+    "id": fm.get("id"), "title": fm.get("title"),
+    "project": fm.get("project"), "domain": fm.get("domain"),
+    "priority": fm.get("priority"), "from_status": fm.get("status"),
+    "created": fm.get("created"),
+    "age_days": None,
+}
+try:
+    c = datetime.date.fromisoformat(fm.get("created", ""))
+    rec["age_days"] = (datetime.date.today() - c).days
+except Exception:
+    pass
+with open(jf, "a") as fh:
+    fh.write(json.dumps(rec) + "\n")
+PYEOF
+}
+
+# ── decide: the consumer for needs-decision. Closes the loop. ────────────────
+cmd_decide() {
+  local f
+  if [ $# -gt 0 ]; then
+    f=$(ls "$OPEN"/*"$1"*.md 2>/dev/null | head -1)
+    [ -z "$f" ] && die "no open task matching '$1'"
+  else
+    # interactive: walk every needs-decision item
+    local list=()
+    for x in "$OPEN"/*.md; do
+      [ -e "$x" ] || continue
+      [ "$(_fm "$x" status)" = "needs-decision" ] && list+=("$x")
+    done
+    [ ${#list[@]} -eq 0 ] && { printf "${c_d}nothing awaiting a decision${c_0}\n"; return 0; }
+    printf "${c_b}%s decision(s) pending${c_0}\n\n" "${#list[@]}"
+    for x in "${list[@]}"; do
+      printf "${c_b}%s${c_0} [%s] %s\n" "$(_fm "$x" id)" "$(_fm "$x" project)" "$(_fm "$x" title)"
+      sed -n '/^---$/,/^---$/!p' "$x" | sed '/^$/d' | head -8 | sed 's/^/    /'
+      printf "\n  ${c_g}[a]${c_0}pprove → ready   ${c_y}[d]${c_0}efer   ${c_r}[x]${c_0} drop   ${c_d}[s]${c_0}kip   [q]uit\n  > "
+      read -r ans </dev/tty
+      case "$ans" in
+        a) _log_decision "$x" approve; sed -i '' 's/^status: .*/status: ready/' "$x"; printf "  ${c_g}→ ready${c_0}\n\n" ;;
+        d) _log_decision "$x" defer;   sed -i '' 's/^status: .*/status: blocked/' "$x"; printf "  ${c_y}→ deferred${c_0}\n\n" ;;
+        x) _log_decision "$x" drop;    mv "$x" "$DONE/"; printf "  ${c_r}→ dropped${c_0}\n\n" ;;
+        q) break ;;
+        *) printf "  ${c_d}skipped${c_0}\n\n" ;;
+      esac
+    done
+    return 0
+  fi
+  printf "%s\n" "$(cat "$f")"
+  printf "\n${c_g}[a]${c_0}pprove  ${c_y}[d]${c_0}efer  ${c_r}[x]${c_0} drop  > "
+  read -r ans </dev/tty
+  case "$ans" in
+    a) _log_decision "$f" approve; sed -i '' 's/^status: .*/status: ready/' "$f"; printf "${c_g}→ ready${c_0}\n" ;;
+    d) _log_decision "$f" defer;   sed -i '' 's/^status: .*/status: blocked/' "$f"; printf "${c_y}→ deferred${c_0}\n" ;;
+    x) _log_decision "$f" drop;    mv "$f" "$DONE/"; printf "${c_r}→ dropped${c_0}\n" ;;
+  esac
+}
+
+cmd_audit()  { "$R/scripts/audit.sh"; }
+cmd_new()    { "$R/scripts/new-project.sh" "$@"; }
+cmd_sync()   {
+  cd "$R" && git add -A && git commit -qm "${1:-chore: sync nathanbot}" 2>/dev/null
+  git remote get-url origin >/dev/null 2>&1 && git push -q 2>/dev/null && printf "${c_g}synced${c_0}\n" \
+    || printf "${c_y}committed locally (no remote configured)${c_0}\n"
+}
+
+usage() { awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; }
+
+# ── brief: the Jarvis moment. Runs daily, speaks first. ──────────────────────
+cmd_brief() {
+  local quiet=false; [ "${1:-}" = "--quiet" ] && quiet=true
+  local out="$R/tasks/.brief-$(date +%Y-%m-%d).md"
+  local ready=0 blocked=0 decide=0
+  for f in "$OPEN"/*.md; do
+    [ -e "$f" ] || continue
+    case "$(_fm "$f" status)" in
+      ready) ready=$((ready+1));; blocked) blocked=$((blocked+1));; needs-decision) decide=$((decide+1));;
+    esac
+  done
+
+  { printf "# Brief — %s\n\n" "$(date '+%A %d %B %Y')"
+    printf "## Queue\n%s ready · %s blocked · %s awaiting your decision · %s untriaged\n\n" \
+      "$ready" "$blocked" "$decide" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)"
+
+    if [ "$decide" -gt 0 ]; then
+      printf "## Waiting on you\n"
+      for f in "$OPEN"/*.md; do
+        [ -e "$f" ] || continue
+        [ "$(_fm "$f" status)" = "needs-decision" ] && printf -- "- **%s** %s\n" "$(_fm "$f" id)" "$(_fm "$f" title)"
+      done; printf "\n"
+    fi
+
+    printf "## Top of queue\n"
+    local n=0
+    for p in 1 2 3 4 5; do
+      for f in "$OPEN"/*.md; do
+        [ -e "$f" ] || continue
+        [ "$(_fm "$f" priority)" = "$p" ] && [ "$(_fm "$f" status)" = "ready" ] && {
+          printf -- "- P%s [%s] %s\n" "$p" "$(_fm "$f" project)" "$(_fm "$f" title)"; n=$((n+1)); }
+        [ "$n" -ge 5 ] && break 2
+      done
+    done
+    [ "$n" -eq 0 ] && printf -- "- (nothing ready)\n"
+
+    printf "\n## Project activity (last 24h)\n"
+    local any=0
+    for d in "$HOME"/Projects/*/; do
+      [ -d "$d/.git" ] || continue
+      local since; since=$(cd "$d" && git log --oneline --since=24.hours 2>/dev/null | wc -l | tr -d ' ')
+      [ "$since" -gt 0 ] && { printf -- "- %s: %s commit(s)\n" "$(basename "$d")" "$since"; any=1; }
+    done
+    [ "$any" -eq 0 ] && printf -- "- quiet\n"
+
+    printf "\n## System health\n"
+    local w; w=$("$R/scripts/audit.sh" 2>/dev/null | grep -c '⚠️' | head -1); w=${w:-0}
+    [ "$w" -eq 0 ] && printf -- "- audit clean\n" || printf -- "- **%s audit warning(s)** — run \`nb audit\`\n" "$w"
+    local free; free=$(df -h / | tail -1 | awk '{print $4}')
+    printf -- "- disk free: %s\n" "$free"
+  } > "$out"
+
+  $quiet || cat "$out"
+  command -v osascript >/dev/null 2>&1 && osascript -e "display notification \"$ready ready · $decide need you\" with title \"nathanbot brief\"" 2>/dev/null
+  printf "\n${c_d}saved: %s${c_0}\n" "${out/#$HOME/\~}"
+  return 0
+}
+
+# ── evolve: self-improvement. PROPOSES, never self-applies. ──────────────────
+cmd_evolve() {
+  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  local tel="$R/tasks/.telemetry.jsonl"
+  printf "${c_b}Analyzing own usage and proposing improvements...${c_0}\n"
+
+  claude -p "You are nathanbot analyzing ITSELF to propose improvements. Be concrete and evidence-based.
+
+EVIDENCE — read all of these:
+1. Usage telemetry (what the owner actually runs, how often, what fails):
+$( [ -f "$tel" ] && tail -200 "$tel" || echo "(no telemetry yet)")
+
+2. Audit output:
+$("$R/scripts/audit.sh" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+
+3. Current commands: $R/bin/nb
+4. Memory system: $R/shared-memory/OVERVIEW.md, $R/AGENTS.md
+5. Task queue state: $(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ') open tasks
+6. Recent session notes: $R/workspace*/memory/ (read the latest few)
+
+ANALYZE:
+- Which nb commands does he actually use vs never touch? Unused commands are either
+  badly designed or badly surfaced — say which.
+- What sits blocked or needs-decision for a long time? That's friction to remove.
+- What does he do MANUALLY that the system could absorb? (check recent session notes)
+- Is memory going stale? Are wiki pages orphaned?
+- What capability is obviously missing given how he works?
+
+OUTPUT — create task files in $OPEN/ starting at id $(next_id), frontmatter matching
+existing tasks there, with:
+  project: nathanbot
+  status: needs-decision      <-- ALWAYS. You propose; the owner approves.
+  domain: ops
+
+Propose 2-5 improvements, highest leverage first. Each must cite the specific evidence
+that motivated it. Do NOT modify any existing file — only create proposal tasks.
+Then print a short summary of what you proposed and why." --permission-mode acceptEdits 2>&1 | tail -35
+
+  printf "\n${c_g}proposals created${c_0} — review with 'nb status', they're all needs-decision\n"
+}
+
+# ── scout: find new tools/systems worth adopting ─────────────────────────────
+cmd_scout() {
+  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  printf "${c_b}Scouting new tools and systems...${c_0}\n"
+  claude -p "Research tools, systems, or techniques the owner should know about.
+
+HIS CONTEXT: read $R/shared-memory/OVERVIEW.md and $R/wiki/pages/owner.md.
+Stack: Expo/React Native, Next.js, Cloudflare Workers, AWS SAM/Lambda, Python, ESP32.
+He runs an AI-agnostic personal system (nathanbot) and cares about agent harnesses,
+memory systems, automation, and developer productivity.
+
+Use web search. Find things from the LAST 3 MONTHS specifically — not general advice.
+Focus on: agent harnesses/frameworks, memory systems, dev tooling that would measurably
+reduce his manual work.
+
+For each genuinely worthwhile finding (max 3, quality over quantity):
+- Create a wiki page at $R/wiki/pages/<slug>.md using the schema in $R/wiki/SCHEMA.md
+  (type: reference, status: active), explaining what it is and specifically whether it
+  would improve HIS setup — including honest reasons it might NOT be worth adopting.
+- Add it to $R/wiki/index.md and log in $R/wiki/log.md.
+- If it's genuinely worth acting on, ALSO create a task in $OPEN/ with
+  project: nathanbot, status: needs-decision.
+
+If nothing meets the bar, say so plainly and create nothing. An empty scout is a valid result." --permission-mode acceptEdits 2>&1 | tail -30
+}
+
+# ── tidy: machine maintenance. Reports by default; --apply for safe actions. ─
+cmd_tidy() {
+  local apply=false; [ "${1:-}" = "--apply" ] && apply=true
+  printf "${c_b}Machine tidy %s${c_0}\n" "$($apply && echo '(applying safe actions)' || echo '(report only — use --apply)')"
+
+  printf "\n${c_b}Disk${c_0}\n  free: %s\n" "$(df -h / | tail -1 | awk '{print $4}')"
+
+  printf "\n${c_b}node_modules in dormant repos (>45d since last commit)${c_0}\n"
+  local total=0
+  while IFS= read -r nm; do
+    [ -z "$nm" ] && continue
+    local repo="${nm%/node_modules}" days=9999
+    local g="$repo"
+    while [ "$g" != "/" ] && [ "$g" != "." ]; do [ -d "$g/.git" ] && break; g=$(dirname "$g"); done
+    if [ -d "$g/.git" ]; then
+      local last; last=$(cd "$g" && git log -1 --format=%ct 2>/dev/null)
+      [ -n "$last" ] && days=$(( ($(date +%s) - last) / 86400 ))
+    fi
+    if [ "$days" -gt 45 ]; then
+      local mb; mb=$(du -sm "$nm" 2>/dev/null | cut -f1)
+      total=$((total + mb))
+      printf "  %5s MB  %3sd  %s\n" "$mb" "$days" "${nm/#$HOME/\~}"
+      $apply && rm -rf "$nm" && printf "         ${c_g}purged${c_0}\n"
+    fi
+  done < <(find "$HOME/Projects" -name node_modules -type d -prune 2>/dev/null)
+  [ "$total" -eq 0 ] && printf "  ${c_d}none${c_0}\n" || printf "  ${c_b}total: %s MB${c_0}\n" "$total"
+
+  printf "\n${c_b}Stray .DS_Store${c_0}\n"
+  local ds; ds=$(find "$HOME/Projects" -name .DS_Store 2>/dev/null | wc -l | tr -d ' ')
+  printf "  %s found\n" "$ds"
+  $apply && [ "$ds" -gt 0 ] && find "$HOME/Projects" -name .DS_Store -delete 2>/dev/null && printf "  ${c_g}deleted${c_0}\n"
+
+  printf "\n${c_b}Uncommitted work (risk of loss)${c_0}\n"
+  local dirty=0
+  for d in "$HOME"/Projects/*/; do
+    [ -d "$d/.git" ] || continue
+    local n; n=$(cd "$d" && git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    [ "$n" -gt 0 ] && { printf "  %-28s %s file(s)\n" "$(basename "$d")" "$n"; dirty=$((dirty+1)); }
+  done
+  [ "$dirty" -eq 0 ] && printf "  ${c_d}all clean${c_0}\n"
+
+  printf "\n${c_d}(tidy never deletes uncommitted work or anything without a remote)${c_0}\n"
+  return 0
+}
+
+# ── telemetry: the system observes itself (local only, gitignored) ───────────
+_telemetry() {
+  local cmd="${1:-none}" started="$2" rc="$3"
+  local dur=$(( $(date +%s) - started ))
+  printf '{"ts":"%s","cmd":"%s","dur_s":%s,"rc":%s,"open":%s,"inbox":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cmd" "$dur" "$rc" \
+    "$(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ')" \
+    "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)" \
+    >> "$R/tasks/.telemetry.jsonl" 2>/dev/null
+}
+_T0=$(date +%s); _CMD="${1:-help}"
+trap '_telemetry "$_CMD" "$_T0" "$?"' EXIT
+
+case "${1:-}" in
+  add)    shift; cmd_add "$@" ;;
+  inbox)  cmd_inbox ;;
+  triage) cmd_triage ;;
+  next)   cmd_next ;;
+  status) cmd_status ;;
+  plan)   shift; cmd_plan "$@" ;;
+  run)    shift; cmd_run "$@" ;;
+  done)   shift; cmd_done "$@" ;;
+  decide) shift; cmd_decide "$@" ;;
+  audit)  cmd_audit ;;
+  brief)  shift; cmd_brief "$@" ;;
+  evolve) cmd_evolve ;;
+  scout)  cmd_scout ;;
+  tidy)   shift; cmd_tidy "$@" ;;
+  new)    shift; cmd_new "$@" ;;
+  sync)   shift; cmd_sync "$@" ;;
+  schedule) shift; "$R/scripts/schedule.sh" "$@" ;;
+  profile)  shift; "$R/scripts/profile.sh" "$@" ;;
+  perms|permissions) shift; "$R/scripts/permissions.sh" "$@" ;;
+  project|proj) shift; "$R/scripts/project.sh" "$@" ;;
+  _logdecision) shift; _log_decision "$1" "$2" ;;
+  discuss|talk) shift; "$R/scripts/discuss.sh" "$@" ;;
+  learn)    shift; "$R/scripts/learn.sh" "$@" ;;
+  groom)    shift; "$R/scripts/groom.sh" "$@" ;;
+  build-ui) shift; "$R/scripts/build-ui.sh" ;;
+  ui|open)  shift
+            curl -s -o /dev/null http://127.0.0.1:7777/ 2>/dev/null \
+              && open -a nathanbot 2>/dev/null || open http://127.0.0.1:7777 \
+              || python3 "$R/ui/server.py" ;;
+  mail)     shift
+            case "${1:-status}" in
+              login|status|verify) python3 "$R/scripts/google/auth.py" "$@" ;;
+              *) python3 "$R/scripts/google/gmail.py" "$@" ;;
+            esac ;;
+  cal)      shift; python3 "$R/scripts/google/calendar.py" "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command: $1  (try: nb help)" ;;
+esac

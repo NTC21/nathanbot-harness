@@ -1,0 +1,9 @@
+name: embedded-c
+kind: language
+description: C/C++ for microcontrollers
+skills: []
+plugins: []
+guidance: |
+  - Memory is scarce — no dynamic allocation in hot paths.
+  - Blocking delays break the loop; prefer non-blocking timers.
+  - Serial output is the debugger.

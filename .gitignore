@@ -1,0 +1,42 @@
+# secrets — never commit
+.env
+.env.local
+.secrets/
+
+# machine-local memory index
+/memory/
+
+# working dirs
+outputs/
+media/*
+!media/.gitkeep
+
+# junk
+.DS_Store
+*.log
+node_modules/
+tasks/.telemetry.jsonl
+tasks/.brief-*.md
+tasks/.log-*.txt
+tasks/logs/
+ui/dist/
+ui-app/node_modules/
+ui-app/dist/
+
+# obsidian per-machine editor layout
+.obsidian/workspace.json
+__pycache__/
+*.pyc
+
+# local config with real identities/projects — ship only *.example.json
+config/accounts.json
+config/paths.json
+config/permissions.json
+config/profiles.json
+config/projects.json
+
+# runtime state / decision journal (personal)
+tasks/.chat.json
+tasks/.decisions.jsonl
+tasks/.inbox-archive.md
+tasks/.triage.lock

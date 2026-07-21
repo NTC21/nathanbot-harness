@@ -1,0 +1,10 @@
+name: react
+kind: framework
+description: React components, hooks, state management
+skills: []
+plugins: []
+guidance: |
+  - Hooks rules are not style suggestions — no conditional hooks, ever.
+  - Colocate state with the component that owns it; lift only when genuinely shared.
+  - Memoize only after measuring. Premature useMemo/useCallback adds noise, not speed.
+  - Keys must be stable IDs, never array indices for reorderable lists.

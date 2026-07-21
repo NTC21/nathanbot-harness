@@ -1,0 +1,10 @@
+name: flask
+kind: framework
+description: Flask web services in Python
+skills: []
+plugins: []
+guidance: |
+  - Blueprints for structure once past a single file.
+  - Never run the dev server in production — gunicorn/uvicorn behind a real proxy.
+  - Config from environment, never hardcoded. Secrets via ~/.secrets, never in-repo.
+  - Validate request bodies explicitly; don't trust client input shape.

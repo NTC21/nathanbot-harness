@@ -1,0 +1,11 @@
+name: content
+kind: practice
+description: Video editing, clips, thumbnails, social posting
+skills: []
+plugins: []
+mcp:
+  - gdrive
+guidance: |
+  - Pipeline: Drive -> download -> transcribe (whisper) -> pick timestamps -> ffmpeg clip -> upload.
+  - Publishing to any public platform ALWAYS requires explicit confirmation.
+  - Keep source footage out of git; media/ is gitignored.

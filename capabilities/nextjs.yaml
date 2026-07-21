@@ -1,0 +1,9 @@
+name: nextjs
+kind: framework
+description: Next.js web apps
+skills: []
+plugins: []
+guidance: |
+  - App Router unless the project is already on Pages Router.
+  - Server Components by default; 'use client' only when genuinely needed.
+  - Keep secrets server-side. NEXT_PUBLIC_* is shipped to the browser.

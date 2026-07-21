@@ -1,0 +1,9 @@
+name: python
+kind: language
+description: Python conventions, uv, ruff, typing
+skills: []
+plugins: []
+guidance: |
+  - Use `uv` for envs and deps (already installed).
+  - Lint with `ruff`; type-check where the project has annotations.
+  - Prefer stdlib before adding a dependency.

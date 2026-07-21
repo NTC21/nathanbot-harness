@@ -1,0 +1,10 @@
+name: tailwind
+kind: framework
+description: Tailwind CSS utility styling
+skills: []
+plugins: []
+guidance: |
+  - Use the theme scale (spacing, colors, type). Arbitrary values like w-[437px] are a smell.
+  - Extract repeated utility strings into a component, not a @apply soup.
+  - Mobile-first: unprefixed = mobile, then sm:/md:/lg: upward.
+  - Always check dark: variants when the project supports dark mode.

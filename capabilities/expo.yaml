@@ -1,0 +1,10 @@
+name: expo
+kind: framework
+description: Expo / React Native mobile apps
+skills: []
+plugins: []
+guidance: |
+  - Expo Router for navigation; file-based routes.
+  - Test iOS and Android — platform-specific files (.ios.tsx/.web.tsx) are real.
+  - EAS for builds. Never commit .env; secrets go through EAS secrets.
+  - Check .nvmrc matches an INSTALLED node version before building.

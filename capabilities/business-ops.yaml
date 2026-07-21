@@ -1,0 +1,38 @@
+name: business-ops
+kind: practice
+description: Email, calendar, CRM, outreach, scheduling, client follow-up
+skills: []
+plugins: []          # optional: your own outreach/CRM plugin
+mcp:
+  - gmail
+  - gcal
+guidance: |
+  ## READ config/accounts.json FIRST — every time, before any outbound action.
+
+  Identity errors are unrecoverable. accounts.json lists your email identities in
+  precedence order, and marks which are actually CONNECTED (authorized to send).
+  Example shape:
+    1. you@example.com          (personal, DEFAULT)     CONNECTED
+    2. you@yourcompany.com      (work / clients)         not connected
+    3. you@yourproduct.com      (a product)              not connected
+
+  The only sendable account is one marked CONNECTED. If a task needs an account that
+  isn't connected, STOP and say so — NEVER silently fall back to a different identity.
+
+  Before drafting anything outbound, state plainly:
+    "Acting as: <email>. Sending to: <recipient>."
+
+  ## Hard rules
+  - NEVER send, reply, or create an invite without explicit confirmation of BOTH the
+    final text and the sending account.
+  - Draft -> show the owner -> send only on approval. No exceptions, no "I'll just send it."
+  - If the right account isn't connected, STOP and say so. Never substitute another account.
+  - If a request names a person but not an account, ask.
+  - Reading email/calendar is fine unprompted. Writing to the outside world is not.
+
+  ## Scheduling
+  - Check for conflicts before proposing times; state the timezone explicitly.
+  - Calendar invites notify other people — same confirmation rule as email.
+
+  ## Client work
+  - Check contract terms before promising scope, timeline, or price.

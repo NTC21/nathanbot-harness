@@ -1,0 +1,37 @@
+{
+  "_comment": "IDENTITY REGISTRY. Copy to accounts.json and fill in your own identities. Read before ANY outbound communication — sending from the wrong account is unrecoverable.",
+  "hard_rules": [
+    "ALWAYS state which account you are acting as, in plain text, BEFORE drafting.",
+    "NEVER send, reply, or create a calendar invite without explicit confirmation of the final text AND the sending account.",
+    "If the correct account for a task is NOT connected, STOP and say so. Never substitute a different account.",
+    "Match account to context via `routing` below. When context is ambiguous, follow `precedence`."
+  ],
+  "precedence": ["personal", "work"],
+  "_precedence_note": "Highest-priority account that fits the context wins. `personal` is the general default.",
+  "accounts": {
+    "personal": {
+      "email": "you@example.com",
+      "rank": 1,
+      "role": "your primary address — the default identity",
+      "connected": false,
+      "status": "Set connected:true after you authorize it (see docs/google-direct-auth.md).",
+      "use_for": "general correspondence, personal matters, anything without a clear business owner",
+      "send_as": ["you@example.com"],
+      "_note": "Token stored in ~/.secrets/google/personal.json — never in this repo."
+    },
+    "work": {
+      "email": "you@yourcompany.com",
+      "rank": 2,
+      "role": "work / client address",
+      "connected": false,
+      "status": "NOT AUTHORIZED — authorize when you need it.",
+      "use_for": "work, agency clients, business correspondence",
+      "priority": "deferred"
+    }
+  },
+  "routing": {
+    "_comment": "project name -> account key. If that account isn't connected, STOP; do not downgrade.",
+    "personal": "personal",
+    "yourcompany": "work"
+  }
+}

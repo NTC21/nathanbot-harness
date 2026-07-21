@@ -1,0 +1,16 @@
+name: cloudflare
+kind: platform
+description: Cloudflare Workers, KV, D1, R2, Durable Objects
+skills:
+  - cloudflare
+  - wrangler
+  - workers-best-practices
+  - durable-objects
+  - sandbox-sdk
+  - agents-sdk
+  - cloudflare-email-service
+  - turnstile-spin
+plugins: []
+guidance: |
+  - Workers runtime is not Node — check API compatibility before using a package.
+  - Bindings over hardcoded config. Secrets via `wrangler secret`.

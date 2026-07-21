@@ -1,0 +1,40 @@
+{
+  "_comment": "Project registry. Controls isolation and autonomy. The engine NEVER crosses project boundaries within a single task, and never overrides review_required. Copy to projects.json and list your own projects.",
+  "_autonomy_levels": {
+    "auto-merge": "AI may implement, review, and merge to main without asking. Default for low-risk projects.",
+    "auto-pr": "AI may implement and open a PR, but a human merges.",
+    "review-required": "AI may implement in a worktree but must stop and ask before ANY push. Loud opt-out for sensitive projects."
+  },
+  "projects": {
+    "myapp": {
+      "path": "${CODE_ROOT}/MyApp",
+      "domain": "coding",
+      "autonomy": "auto-pr",
+      "subrepos": ["mobile", "landing", "infrastructure"],
+      "notes": "Real product with users."
+    },
+    "client-site": {
+      "path": "${CODE_ROOT}/ClientSite",
+      "domain": "ops",
+      "autonomy": "review-required",
+      "notes": "CLIENT work. Real customers, contracts, money. Never auto-push."
+    },
+    "nathanbot": {
+      "path": "${CODE_ROOT}/nathanbot",
+      "domain": "ops",
+      "autonomy": "auto-merge",
+      "notes": "This system. Self-improvement changes land here."
+    }
+  },
+  "defaults": {
+    "autonomy": "auto-pr",
+    "max_concurrent": 8,
+    "model": "opus"
+  },
+  "ingest": {
+    "_comment": "Pluggable external sources. Enable as needed; each maps external items into tasks/open/.",
+    "jira": { "enabled": false, "project_key": "PROJ" },
+    "gdrive": { "enabled": false, "folder_id": "${DRIVE_INBOX_FOLDER_ID}" },
+    "github_issues": { "enabled": false, "repos": [] }
+  }
+}
