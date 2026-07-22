@@ -2,12 +2,16 @@
 """nathanbot UI — local server. No build step, no deps beyond stdlib.
 Serves the dashboard and a small JSON API over the real task/memory files.
 """
-import json, os, re, subprocess, pathlib, http.server, urllib.parse
+import json, os, re, socket, subprocess, pathlib, http.server, threading, time, urllib.parse
 
 R = pathlib.Path(__file__).resolve().parents[1]
 OPEN, DONE, ARCH = R/"tasks"/"open", R/"tasks"/"done", R/"tasks"/"archive"
 PORT = int(os.environ.get("NB_UI_PORT", "7777"))
 NB = str(R/"bin"/"nb")
+
+import sys
+sys.path.insert(0, str(R/"scripts"/"voice"))
+from prompt import build_operator_prompt  # shared with the voice daemon
 
 
 def _which_claude():
@@ -29,9 +33,25 @@ CLAUDE_BIN = _which_claude()
 # when the server is launched outside the LaunchAgent (which sets PATH itself).
 _HARDENED_PATH = os.pathsep.join([
     os.path.dirname(CLAUDE_BIN), "/opt/homebrew/bin", "/usr/local/bin",
-    "/usr/bin", "/bin", "/usr/sbin", "/sbin", os.path.expanduser("~/.local/bin"),
+    "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+    os.path.join(os.environ.get("HOME", os.path.expanduser("~")), ".local", "bin"),
+    os.environ.get("PATH", ""),   # keep whatever launchd/login already provided
 ])
 NB_ENV = {**os.environ, "PATH": _HARDENED_PATH}
+
+
+def chat_model():
+    """Model for operator chat. NB_CHAT_MODEL env beats config/ui.json.
+    Use alias names (sonnet/opus/haiku) — full model IDs bypass claudew's
+    Ollama-fallback alias remapping and would break the local-brain path."""
+    m = os.environ.get("NB_CHAT_MODEL", "").strip()
+    if m:
+        return m
+    try:
+        return (json.loads((R/"config"/"ui.json").read_text())
+                .get("chat_model") or "sonnet").strip()
+    except Exception:
+        return "sonnet"
 
 
 def nb(*args, timeout=600):
@@ -99,6 +119,129 @@ def inbox_lines():
             for l in p.read_text().splitlines() if l.startswith("- [ ]")]
 
 
+# ── HUD data: slow sources behind a stale-while-refresh cache ────────────────
+# /api/state is polled every few seconds; gcalendar/launchctl take seconds.
+# cached() always returns instantly (last value or the default) and refreshes
+# in a daemon thread at most once at a time per key.
+_CACHE = {}          # key -> {"val", "ts", "busy"}
+_CACHE_LOCK = threading.Lock()
+
+
+def cached(key, ttl, fn, default):
+    with _CACHE_LOCK:
+        e = _CACHE.setdefault(key, {"val": default, "ts": 0.0, "busy": False})
+        fresh = (time.time() - e["ts"]) < ttl
+        if fresh or e["busy"]:
+            return e["val"]
+        e["busy"] = True
+
+    def refresh():
+        val = None
+        try:
+            val = fn()
+        except Exception:
+            pass                              # keep the previous value on any failure
+        with _CACHE_LOCK:
+            if val is not None:
+                _CACHE[key]["val"] = val
+            _CACHE[key]["ts"] = time.time()   # even failures wait a TTL before retrying
+            _CACHE[key]["busy"] = False
+
+    threading.Thread(target=refresh, daemon=True).start()
+    return _CACHE[key]["val"]
+
+
+def _agenda():
+    """Today's events across all calendars — [] if Google auth isn't set up."""
+    r = subprocess.run(
+        ["python3", str(R/"scripts"/"google"/"gcalendar.py"), "agenda", "--all", "--days", "1"],
+        capture_output=True, text=True, timeout=20, env=NB_ENV)
+    out = []
+    for line in (r.stdout or "").splitlines():
+        m = re.match(r"^  (\S+)\s+(?:\[(\w+)\]\s+)?(.*?)(?:\s+@ (.*))?$", line)
+        if m:
+            out.append({"time": m.group(1), "account": m.group(2) or "",
+                        "title": m.group(3).strip(), "loc": m.group(4) or ""})
+    return out
+
+
+# ── speech control: track speaker process groups so "stop talking" works ─────
+_SPEAKERS = []
+
+
+def _stop_speech():
+    """Kill every in-flight speak.sh session (curl/edge/afplay/say die with it)."""
+    import signal
+    while _SPEAKERS:
+        p = _SPEAKERS.pop()
+        try:
+            os.killpg(p.pid, signal.SIGTERM)   # start_new_session => pgid == pid
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    # sweep strays from other entry points (nb brief, watch) — audio players only
+    for cmd in ("afplay", "say"):
+        subprocess.run(["pkill", "-x", cmd], capture_output=True)
+
+
+def _port_up(port, timeout=0.3):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _systems():
+    """Health of the moving parts: launchd jobs, voice, local brain, claude."""
+    jobs = {}
+    try:
+        r = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=5)
+        for line in (r.stdout or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3 and parts[2].startswith("com.nathanbot."):
+                name = parts[2].replace("com.nathanbot.", "")
+                jobs[name] = {"running": parts[0] != "-", "last_exit": parts[1]}
+    except Exception:
+        pass
+    logs = R/"tasks"/"logs"
+    for name, meta in jobs.items():
+        lp = logs/f"{name}.log"
+        meta["last_run"] = int(lp.stat().st_mtime) if lp.exists() else None
+
+    capped = False   # a claude-fallback event in the last hour = running on the local brain
+    try:
+        tail = (R/"tasks"/".telemetry.jsonl").read_text().splitlines()[-200:]
+        cutoff = time.time() - 3600
+        for line in tail:
+            if '"claude-fallback"' in line:
+                ev = json.loads(line)
+                ts = time.mktime(time.strptime(ev["ts"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+                if ts > cutoff:
+                    capped = True
+    except Exception:
+        pass
+    return {
+        "jobs": jobs,
+        "voicebox": _port_up(17493),
+        "ollama": _port_up(int(os.environ.get("NB_OLLAMA_PORT", "11434"))),
+        "claude": "capped" if capped else "ok",
+        "checked": int(time.time()),
+    }
+
+
+def _telemetry_tail(n=30):
+    p = R/"tasks"/".telemetry.jsonl"
+    if not p.exists():
+        return []
+    out = []
+    for line in p.read_text().splitlines()[-n:]:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
 def state():
     accounts = _load_json(R/"config"/"accounts.json", {})
     return {
@@ -109,6 +252,9 @@ def state():
         "permissions": _load_json(R/"config"/"permissions.json", {}),
         "chat": chat_history(),
         "accounts": accounts.get("accounts", {}) if isinstance(accounts, dict) else {},
+        "agenda": cached("agenda", 300, _agenda, []),
+        "systems": cached("systems", 60, _systems, {}),
+        "telemetry": cached("telemetry", 5, _telemetry_tail, []),
     }
 
 
@@ -177,7 +323,7 @@ def route_say(text):
 
 class H(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
-        super().__init__(*a, directory=str(R/"ui"/"dist"), **k)
+        super().__init__(*a, directory=str(R/"ui"/"web"), **k)
 
     def _json(self, obj, code=200):
         b = json.dumps(obj).encode()
@@ -187,16 +333,52 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    # Only the local UI may talk to the API. Blocks cross-origin "simple requests"
+    # from arbitrary websites and DNS-rebinding (Host must be a local literal).
+    _OK_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}", "127.0.0.1", "localhost"}
+
+    def _local_ok(self):
+        if (self.headers.get("Host") or "") not in self._OK_HOSTS:
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            try:
+                oh = urllib.parse.urlparse(origin).netloc
+            except Exception:
+                return False
+            if oh not in self._OK_HOSTS:
+                return False
+        return True
+
     def do_GET(self):
-        if self.path == "/api/state":
-            return self._json(state())
-        # SPA: unknown non-asset paths fall back to index.html
-        p = urllib.parse.urlparse(self.path).path
-        if p != "/" and not (R/"ui"/"dist"/p.lstrip("/")).exists():
-            self.path = "/"
-        return super().do_GET()
+        try:
+            if self.path == "/api/state":
+                if not self._local_ok():
+                    return self._json({"ok": False, "error": "forbidden"}, 403)
+                return self._json(state())
+            # SPA: unknown non-asset paths fall back to index.html
+            p = urllib.parse.urlparse(self.path).path
+            if p != "/" and not (R/"ui"/"web"/p.lstrip("/")).exists():
+                self.path = "/"
+            return super().do_GET()
+        except Exception as e:                      # noqa: BLE001 — never hang the browser
+            try:
+                return self._json({"ok": False, "error": str(e)[:300]}, 500)
+            except Exception:
+                pass
 
     def do_POST(self):
+        try:
+            return self._post()
+        except subprocess.TimeoutExpired:
+            return self._json({"ok": True, "isError": True,
+                               "reply": "That took too long and timed out."})
+        except Exception as e:                      # noqa: BLE001 — always answer JSON
+            return self._json({"ok": False, "error": str(e)[:300]}, 500)
+
+    def _post(self):
+        if not self._local_ok():
+            return self._json({"ok": False, "error": "forbidden"}, 403)
         try:
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or "{}")
@@ -210,14 +392,51 @@ class H(http.server.SimpleHTTPRequestHandler):
             nb("add", body["text"], timeout=30)
             return self._json({"ok": True})
 
+        if path == "/api/listen":
+            # record one utterance via the local voice stack -> return the transcript.
+            # Used by the Dock app, where WKWebView has no browser speech API.
+            try:
+                r = subprocess.run(
+                    ["python3", str(R/"scripts"/"voice"/"jarvis.py"), "capture"],
+                    capture_output=True, text=True, timeout=40, env=NB_ENV)
+                text = _strip_ansi(r.stdout).strip().splitlines()[-1] if r.stdout.strip() else ""
+                if r.returncode == 0 and text:
+                    return self._json({"ok": True, "text": text})
+                return self._json({"ok": False,
+                                   "error": "mic unavailable — run 'nb jarvis once' in Terminal once to grant the microphone"})
+            except subprocess.TimeoutExpired:
+                return self._json({"ok": False, "error": "listening timed out"})
+
+        if path == "/api/speak":
+            # fire-and-forget: speak text in the Jarvis voice (speak.sh chain).
+            # New speech interrupts old — overlapping voices are worse than a cut-off.
+            t = (body.get("text") or "").strip()
+            if t:
+                _stop_speech()
+                # start_new_session: audio must outlive whoever kills our process
+                # group, and gives us a clean process group to stop on demand
+                p = subprocess.Popen([str(R/"scripts"/"speak.sh"), t], env=NB_ENV,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     start_new_session=True)
+                _SPEAKERS.append(p)
+            return self._json({"ok": True})
+
+        if path == "/api/speak/stop":
+            _stop_speech()
+            return self._json({"ok": True})
+
         if path == "/api/status":
+            # validate: status is one of ours, never raw client text into the file
+            new = body.get("status")
+            if new not in {"ready", "blocked", "needs-decision", "done", "failed"}:
+                return self._json({"ok": False, "error": "bad status"}, 400)
             for p in OPEN.glob("*.md"):
                 if fm(p).get("id") == body.get("id"):
-                    t = re.sub(r"^status: .*$", f"status: {body['status']}",
+                    t = re.sub(r"^status: .*$", f"status: {new}",
                                p.read_text(), count=1, flags=re.M)
                     p.write_text(t)
-                    nb("_logdecision", str(p), body["status"], timeout=30)
-                    if body["status"] == "done":
+                    nb("_logdecision", str(p), new, timeout=30)
+                    if new == "done":
                         DONE.mkdir(exist_ok=True)
                         p.rename(DONE/p.name)
                     return self._json({"ok": True})
@@ -250,53 +469,29 @@ class H(http.server.SimpleHTTPRequestHandler):
                 return self._json({"ok": False, "error": "empty"}, 400)
             hist = chat_history()
             convo = "\n".join(f"{m['role'].upper()}: {m['text']}" for m in hist[-10:])
-            prompt = f"""You are nathanbot — the owner's operator (their "Jarvis") in the dashboard.
-You do not just answer; you ACT on intent. The owner should never have to name a command.
-
-FIRST load their context (don't dump it back at them):
-- {R}/shared-memory/OVERVIEW.md
-- {R}/AGENTS.md   (routing + hard rules)
-- {R}/config/accounts.json   (email identities)
-- {R}/config/permissions.json   (what you may do without asking)
-- any {R}/wiki/pages/*.md the request actually needs (start at {R}/wiki/index.md)
-
-TOOLS — use them; the nb CLI is at {R}/bin/nb :
-- capture work:            {R}/bin/nb add "<task>"
-- file inbox -> tasks:     {R}/bin/nb triage
-- decompose a goal:        {R}/bin/nb plan "<goal>"
-- see state:               {R}/bin/nb status  |  next  |  brief
-- scaffold a NEW project:  {R}/bin/nb project new <name> --type <next|expo|python|node>
-- maintenance (report):    {R}/bin/nb audit  |  tidy  |  groom
-- read email subjects:     python3 {R}/scripts/google/gmail.py --account personal search "<query>"
-- draft email (no send):   python3 {R}/scripts/google/gmail.py --account personal draft --to .. --subject .. --body ..
-- read files, run read-only shell, search memory — freely.
-
-ACT ON INTENT (do the thing, then say what you did):
-- a statement of work / "remind me to X" / "I need to X"  -> capture it (nb add), then nb triage so it becomes a real task.
-- "what should I do / what's up / where am I"              -> read state, answer concretely with the actual top items.
-- "plan X" / "how do I build X"                            -> nb plan into tasks.
-- "make/start a project X"                                 -> nb project new (infer type), report what got created.
-- "clean up / what's messy"                               -> run tidy/audit in REPORT mode, summarize. Apply cleanup ONLY on their explicit yes.
-- "check my email / what's in my inbox"                    -> read subjects (allowed), summarize. Reading bodies needs their yes.
-- "draft an email to X"                                    -> draft it, show it. DO NOT send.
-- a real question / "should we?"                           -> answer with full context and a real opinion, including disagreement.
-
-SAFETY — hard rules, never cross unattended (the owner may be away):
-- NEVER send/reply email, create or modify calendar events, push, merge, delete files or branches,
-  or run anything destructive (tidy --apply, rm) without the owner's explicit yes IN THIS CHAT. Draft/propose and ask.
-- Only the authorized sending identity in {R}/config/accounts.json may send. Never substitute another identity.
-- Executing work against their real project code (nb run) is their call — tee it up, don't run it unattended.
-- If you learn something durable about the owner, write it to memory per {R}/wiki/storage-policy.md.
-
-RECENT CONVERSATION:
-{convo or '(none)'}
-
-OWNER: {msg}
-
-Reply terse — no filler. Lead with what you DID (name the action), then what's next or one clear question."""
+            prompt = build_operator_prompt(str(R), convo, msg, channel="chat")
+            # Operator toolset: the nb CLI + the gmail script (which itself enforces
+            # draft-not-send) + read/edit/web. Nothing else can run. NB_OPERATOR=1
+            # hard-blocks the dangerous nb subcommands (run, tidy --apply, sync, evolve).
+            # The operator ingests untrusted content (email/web), so the secrets vault is
+            # hard-denied — a prompt injection can't read keys to exfiltrate via WebFetch.
+            home = os.path.expanduser("~")
+            # claudew wraps CLAUDE_BIN: same CLI, but auto-falls back to the
+            # local Ollama brain when subscription usage caps
+            chat_env = {**NB_ENV, "NB_OPERATOR": "1", "NB_CLAUDE_BIN": CLAUDE_BIN}
+            argv = [str(R/"bin"/"claudew"), "-p", prompt,
+                    "--model", chat_model(),
+                    "--permission-mode", "acceptEdits",
+                    "--allowedTools",
+                    "Read", "Grep", "Glob", "Edit", "Write", "WebSearch", "WebFetch",
+                    f"Bash({NB}:*)",
+                    f"Bash(python3 {R}/scripts/google/gmail.py:*)",
+                    "--disallowedTools",
+                    f"Read({home}/.secrets/**)", f"Grep({home}/.secrets/**)",
+                    f"Glob({home}/.secrets/**)", f"Edit({home}/.secrets/**)",
+                    f"Write({home}/.secrets/**)"]
             try:
-                r = subprocess.run([CLAUDE_BIN, "-p", prompt, "--permission-mode", "acceptEdits"],
-                                   capture_output=True, text=True, timeout=900)
+                r = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=chat_env)
             except subprocess.TimeoutExpired:
                 return self._json({"ok": True, "isError": True,
                                    "reply": "That took too long and timed out. Try a shorter ask."})
@@ -306,7 +501,7 @@ Reply terse — no filler. Lead with what you DID (name the action), then what's
                 return self._json({"ok": True, "isError": True,
                                    "reply": "Something went wrong reaching Claude — not saved.",
                                    "error": _strip_ansi(r.stderr).strip()[:800]})
-            hist += [{"role": "user", "text": msg}, {"role": "nathanbot", "text": out}]
+            hist += [{"role": "nathan", "text": msg}, {"role": "nathanbot", "text": out}]
             chat_save(hist)
             return self._json({"ok": True, "reply": out})
 

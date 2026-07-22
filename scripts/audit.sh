@@ -32,7 +32,7 @@ hdr "4. Orphan wiki pages (no inbound or outbound links)"
 for f in wiki/pages/*.md; do
   [ -e "$f" ] || continue
   b=$(basename "$f" .md)
-  out=$(grep -c '\[\[' "$f" 2>/dev/null || echo 0)
+  out=$(grep -c '\[\[' "$f" 2>/dev/null; true)   # grep -c prints 0 itself; '|| echo 0' double-emits "0\n0"
   in=$(grep -rl "\[\[$b\]\]" wiki/ --include='*.md' 2>/dev/null | grep -v "$f" | wc -l | tr -d ' ')
   [ "$out" -eq 0 ] && bad "$b has no outbound links"
   [ "$in" -eq 0 ] && bad "$b has no inbound links (invisible in graph)"
@@ -81,5 +81,29 @@ hdr "9. Secret leakage"
 if git ls-files 2>/dev/null | grep -qE '(^|/)\.env$|\.pem$|\.p8$|AuthKey_'; then
   bad "secret-looking files are TRACKED in this repo"
 else ok "no tracked secrets"; fi
+
+hdr "10. Telemetry integrity"
+tf="tasks/.telemetry.jsonl"
+if [ -f "$tf" ]; then
+  broken=$(python3 -c "
+import json
+b=0
+for l in open('$tf'):
+    l=l.strip()
+    if l:
+        try: json.loads(l)
+        except Exception: b+=1
+print(b)" 2>/dev/null || echo '?')
+  [ "$broken" = 0 ] && ok "usage log clean (all lines parse)" \
+    || bad "$broken malformed line(s) in .telemetry.jsonl — evolve/digest read garbage"
+else ok "no telemetry yet"; fi
+
+hdr "11. Wiki hygiene"
+vaults=$(find . -name .obsidian -not -path '*/node_modules/*' | wc -l | tr -d ' ')
+[ "$vaults" = 1 ] && ok "one Obsidian vault (wiki/)" \
+  || bad "$vaults Obsidian vaults on this tree — nested vaults split the graph; keep only wiki/"
+wikiprobs=$(python3 scripts/wiki_index.py --lint 2>/dev/null | grep -c ':' || echo '?')
+[ "$wikiprobs" = 0 ] && ok "wiki clean (schema, links, index in sync)" \
+  || bad "$wikiprobs wiki problem(s) — run 'nb wiki lint'"
 
 printf "\n\033[1m%s warning(s)\033[0m\n" "$warn"

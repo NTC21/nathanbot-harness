@@ -8,15 +8,27 @@
 #   nb status              what's open / in flight / blocked
 #   nb plan "<goal>"       decompose a big goal into tasks
 #   nb run [--dry-run]     execute ready tasks (parallel, isolated per project)
+#   nb run --auto          unattended-safe subset only: auto-merge projects in
+#                          NB_AUTO_PROJECTS (default: nathanbot), skip 'auto: false'
+#   nb run --only <id>     run just one task (witnessed first runs)
 #   nb done <id>           mark a task complete
 #   nb decide [id]         resolve needs-decision items (approve/defer/drop)
 #   nb groom [--apply]     archive stale tasks so the queue does not rot
 #   nb discuss ["topic"]   talk freely; it interviews you and absorbs what it learns
+#   nb today               open today's daily note in Obsidian (one shot)
+#   nb digest              turn today's daily Obsidian notes -> tasks + saved facts
+#   nb watch [--dry]       ambient awareness — imminent meetings, dirty repos, VIP mail
 #
-#   nb brief               daily briefing — what's next, what's waiting, system health
-#   nb evolve              improve the SYSTEM — analyze own usage, propose fixes
+#   nb brief [--speak]     daily briefing — what's next, waiting, health; --speak reads it aloud
+#   nb speak "<text>"      nathanbot says it out loud (Jarvis voice; NB_VOICE to change)
+#   nb jarvis [once|text]  hands-free voice — say "Jarvis", ask, it acts + replies aloud
+#   nb evolve [--apply]    improve the SYSTEM; --apply auto-fixes the safe tier (wiki/task hygiene)
 #   nb learn               improve the model of YOU — analyze your decisions, propose memory
+#   nb feedback "<note>"   tell it what to do differently — highest-priority learning signal
+#   nb remember "<fact>"   keep durable knowledge/rules in nathanbot (EVERY harness sees it)
 #   nb scout               research new tools/systems worth adopting
+#   nb study <url|file>    ingest valuable knowledge into the wiki so it self-improves
+#   nb wiki index|lint     rebuild wiki/index.md from frontmatter; lint pages vs SCHEMA
 #   nb tidy [--apply]      machine maintenance: caches, dormant deps, uncommitted work
 #
 #   nb audit               self-heal check on the memory system
@@ -31,6 +43,24 @@
 set -uo pipefail
 
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# every AI call goes through claudew: identical to `claude`, but auto-falls
+# back to the local Ollama brain when subscription usage caps (never stops)
+CLAUDE="$R/bin/claudew"
+
+# ── task-writing standard — injected into every generator so no task is ever cryptic.
+#    Full human doc: wiki/pages/task-style.md ────────────────────────────────────────────
+TASK_STYLE='WRITE EVERY TASK SO NATHAN NEVER HAS TO ASK "what is this?" — assume a tired
+non-engineer is reading it cold, months from now:
+- title: a plain-English sentence, NOT a code/file reference. A decision starts with "Decide:".
+  If it needs info from Nathan before it can move, say that in the title.
+- body, IN THIS EXACT ORDER, plain language, expand every acronym, no bare file paths up top:
+    **What this is** — 1-2 sentences anyone understands.
+    **Why it matters** — the concrete consequence of doing / not doing it.
+    **What I need from you** — the exact decision or info, as clear options, recommend one.
+       (include this section ONLY if something is genuinely owed by Nathan; omit if just buildable)
+    **Done when** — the observable finish line.
+- ALL engineer detail goes LAST, under a short "*Technical:*" line. Never lead with it.'
 INBOX="$R/tasks/inbox.md"
 OPEN="$R/tasks/open"
 DONE="$R/tasks/done"
@@ -46,7 +76,8 @@ next_id() {
   for f in "$OPEN"/*.md "$DONE"/*.md; do
     [ -e "$f" ] || continue
     local i="${f##*/t-}"; i="${i%%-*}"; i="${i%.md}"
-    [[ "$i" =~ ^[0-9]+$ ]] && [ "$i" -gt "$n" ] && n="$i"
+    # 10# forces base-10: zero-padded ids like 0008 are OCTAL in bash arithmetic otherwise
+    [[ "$i" =~ ^[0-9]+$ ]] && [ $((10#$i)) -gt "$n" ] && n=$((10#$i))
   done
   printf "%04d" $((n+1))
 }
@@ -82,14 +113,14 @@ _autotriage() {
 }
 
 cmd_inbox() {
-  local n; n=$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)
+  local n; n=$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)
   printf "${c_b}Inbox (%s untriaged)${c_0}\n" "$n"
   grep '^- \[ \]' "$INBOX" 2>/dev/null | sed 's/<!--.*-->//' | sed 's/^- \[ \]/  •/' || printf "  ${c_d}empty${c_0}\n"
 }
 
 # ── triage: AI files raw ideas into structured tasks ─────────────────────────
 cmd_triage() {
-  local n; n=$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)
+  local n; n=$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)
   [ "$n" -eq 0 ] && { printf "${c_d}inbox empty — nothing to triage${c_0}\n"; return 0; }
   command -v claude >/dev/null 2>&1 || die "claude CLI not found"
 
@@ -100,7 +131,7 @@ cmd_triage() {
   printf "${c_b}Triaging %s item(s)...${c_0}\n" "$n"
   local prompt
   prompt=$(cat <<EOF
-You are triaging the owner's idea inbox for nathanbot.
+You are triaging Nathan's idea inbox for nathanbot.
 
 CONTEXT — read these first for conventions, projects, and hard rules:
 - $R/shared-memory/OVERVIEW.md
@@ -123,7 +154,7 @@ autonomy: inherit
 created: $(date +%Y-%m-%d)
 ---
 
-Then a short body: what "done" looks like, and any first step.
+Then the body. $TASK_STYLE
 
 RULES:
 - If an item is vague, set status: needs-decision and write what you'd need to know.
@@ -136,7 +167,7 @@ Report a one-line summary per task created.
 EOF
 )
   local before; before=$(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ')
-  claude -p "$prompt" --permission-mode acceptEdits 2>&1 | tail -30
+  "$CLAUDE" -p "$prompt" --permission-mode acceptEdits 2>&1 | tail -30
   local after; after=$(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ')
 
   # State mutation happens HERE, in bash — and only if tasks were actually created.
@@ -156,7 +187,45 @@ EOF
 # ── read task frontmatter ────────────────────────────────────────────────────
 _fm() { grep -m1 "^$2:" "$1" 2>/dev/null | sed "s/^$2:[[:space:]]*//"; }
 
+# Route a task's domain to its memory workspace, so write-back fills the right
+# folder instead of everything landing in 'general'. Keeps the 5-way split real.
+_workspace_for() {
+  case "$1" in
+    coding)            echo "workspace-coding" ;;
+    content|creative)  echo "workspace-creative" ;;
+    research|language) echo "workspace-research" ;;
+    ops|admin)         echo "workspace-admin" ;;
+    *)                 echo "workspace" ;;
+  esac
+}
+
 cmd_next() {
+  # Decisions lead. nb next used to hide needs-decision items, so questions piled up
+  # silently (t-0019). Now they surface first and can be resolved inline.
+  local dlist=()
+  for f in "$OPEN"/*.md; do
+    [ -e "$f" ] || continue
+    [ "$(_fm "$f" status)" = "needs-decision" ] && dlist+=("$f")
+  done
+  if [ ${#dlist[@]} -gt 0 ]; then
+    printf "${c_y}%s answer(s) needed first${c_0}\n" "${#dlist[@]}"
+    local now; now=$(date +%s)
+    for f in "${dlist[@]}"; do
+      local created age agestr; created=$(_fm "$f" created)
+      age=$(( ( now - $(date -j -f "%Y-%m-%d" "$created" +%s 2>/dev/null || echo "$now") ) / 86400 ))
+      agestr=""; [ "$age" -ge 7 ] && agestr=" ${c_r}(${age}d waiting)${c_0}"
+      printf "  ${c_y}?${c_0} %-10s %-16s %s%b\n" "$(_fm "$f" id)" "[$(_fm "$f" project)]" "$(_fm "$f" title | sed 's/^"//;s/"$//')" "$agestr"
+    done
+    if [ -t 0 ] && [ -t 1 ]; then
+      printf "  ${c_d}resolve now? [y] walk them · [Enter] skip to ready${c_0} > "
+      read -r a </dev/tty
+      [ "$a" = y ] && { printf "\n"; cmd_decide; }
+    else
+      printf "  ${c_d}→ 'nb decide' to resolve${c_0}\n"
+    fi
+    printf "\n"
+  fi
+
   printf "${c_b}Next up${c_0}\n"
   local found=0
   for p in 1 2 3 4 5; do
@@ -164,7 +233,7 @@ cmd_next() {
       [ -e "$f" ] || continue
       [ "$(_fm "$f" priority)" = "$p" ] || continue
       [ "$(_fm "$f" status)" = "ready" ] || continue
-      printf "  ${c_g}P%s${c_0} %-10s %-16s %s\n" "$p" "$(_fm "$f" id)" "[$(_fm "$f" project)]" "$(_fm "$f" title)"
+      printf "  ${c_g}P%s${c_0} %-10s %-16s %s\n" "$p" "$(_fm "$f" id)" "[$(_fm "$f" project)]" "$(_fm "$f" title | sed 's/^"//;s/"$//')"
       found=$((found+1))
       [ "$found" -ge 8 ] && break 2
     done
@@ -189,7 +258,7 @@ cmd_status() {
   printf "  ${c_y}blocked${c_0}        %s\n" "$blocked"
   printf "  ${c_r}needs decision${c_0} %s\n" "$decide"
   printf "  ${c_d}done${c_0}           %s\n" "$done_n"
-  printf "  ${c_d}inbox untriaged %s${c_0}\n" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)"
+  printf "  ${c_d}inbox untriaged %s${c_0}\n" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)"
 
   if [ "$decide" -gt 0 ]; then
     printf "\n${c_r}Waiting on you:${c_0}\n"
@@ -206,7 +275,7 @@ cmd_plan() {
   [ $# -gt 0 ] || die "usage: nb plan \"the big thing you want\""
   command -v claude >/dev/null 2>&1 || die "claude CLI not found"
   printf "${c_b}Planning:${c_0} %s\n" "$*"
-  claude -p "Decompose this goal into independently executable tasks for the owner's nathanbot system.
+  "$CLAUDE" -p "Decompose this goal into independently executable tasks for Nathan's nathanbot system.
 
 GOAL: $*
 
@@ -217,49 +286,80 @@ files there (see any t-*.md). Rules:
 - Each task must be independently runnable in ONE project (never cross projects).
 - Order via priority (1 = first). Use status: blocked + note the dependency where real.
 - Prefer 3-8 tasks. If the goal needs more, make the first task a deeper planning task.
+
+$TASK_STYLE
+
 Report the plan as a numbered list." --permission-mode acceptEdits 2>&1 | tail -30
 }
 
 # ── run: execute ready tasks, isolated per project ───────────────────────────
 cmd_run() {
-  local dry=false; [ "${1:-}" = "--dry-run" ] && dry=true
+  # the chat operator may capture/plan/report, but must NOT execute against real
+  # project code unattended — that's Nathan's explicit call.
+  [ -n "${NB_OPERATOR:-}" ] && die "nb run is disabled for the chat operator — run it from the Tasks tab or a terminal."
+  local dry=false autorun=false onlyid=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) dry=true ;;
+      --auto)    autorun=true ;;
+      --only)    onlyid="$2"; shift ;;
+    esac
+    shift
+  done
   command -v claude >/dev/null 2>&1 || die "claude CLI not found"
   local max; max=$(python3 -c "import json;print(json.load(open('$R/config/projects.json'))['defaults']['max_concurrent'])" 2>/dev/null || echo 4)
 
   local tasks=()
   for f in "$OPEN"/*.md; do
     [ -e "$f" ] || continue
-    [ "$(_fm "$f" status)" = "ready" ] && tasks+=("$f")
+    [ "$(_fm "$f" status)" = "ready" ] || continue
+    [ -n "$onlyid" ] && { case "$f" in *"$onlyid"*) ;; *) continue ;; esac; }
+    tasks+=("$f")
   done
-  [ ${#tasks[@]} -eq 0 ] && { printf "${c_d}no ready tasks${c_0}\n"; return 0; }
+  [ ${#tasks[@]} -eq 0 ] && { printf "${c_d}no ready tasks%s${c_0}\n" "${onlyid:+ matching '$onlyid'}"; return 0; }
 
   printf "${c_b}Running %s task(s), max %s concurrent${c_0}\n" "${#tasks[@]}" "$max"
   local running=0
   for f in "${tasks[@]}"; do
     local id proj auto path
     id=$(_fm "$f" id); proj=$(_fm "$f" project)
+    # project comes from task frontmatter (semi-trusted) — pass via argv, never
+    # interpolate into the Python source (code-exec risk)
     auto=$(python3 -c "
-import json,os
-c=json.load(open('$R/config/projects.json'))
-p=c['projects'].get('$proj')
-print(p['autonomy'] if p else c['defaults']['autonomy'])" 2>/dev/null || echo auto-pr)
+import json,sys
+c=json.load(open(sys.argv[1]))
+p=c['projects'].get(sys.argv[2])
+print(p['autonomy'] if p else c['defaults']['autonomy'])" "$R/config/projects.json" "$proj" 2>/dev/null || echo auto-pr)
     path=$(python3 -c "
-import json,os
-c=json.load(open('$R/config/projects.json'))
-p=c['projects'].get('$proj')
-print(os.path.expandvars(p['path']).replace('\${CODE_ROOT}', os.path.expanduser('~/Projects')) if p else '')" 2>/dev/null)
+import json,os,sys
+c=json.load(open(sys.argv[1]))
+p=c['projects'].get(sys.argv[2])
+print(os.path.expandvars(p['path']).replace('\${CODE_ROOT}', os.path.expanduser('~/Projects')) if p else '')" "$R/config/projects.json" "$proj" 2>/dev/null)
 
-    printf "  %-10s [%s] ${c_d}%s${c_0} → %s\n" "$id" "$proj" "$auto" "$(_fm "$f" title)"
+    # --auto: unattended safe subset. Runs ONLY tasks whose project is 'auto-merge'
+    # (Nathan's own "AI may merge without asking" tier) AND in the allowlist
+    # (NB_AUTO_PROJECTS, default nathanbot only) AND not opted out with 'auto: false'.
+    # Everything else — client work, products at auto-pr, review-required — is left
+    # for a manual, witnessed 'nb run'.
+    if $autorun; then
+      local allow; allow=$(echo "${NB_AUTO_PROJECTS:-nathanbot}" | tr ',' ' ')
+      if [ "$auto" != "auto-merge" ] || [ "$(_fm "$f" auto)" = "false" ] || ! printf ' %s ' "$allow" | grep -q " $proj "; then
+        printf "  ${c_d}skip — not auto-eligible (%s/%s)${c_0} %s\n" "$proj" "$auto" "$id"
+        continue
+      fi
+    fi
+
+    printf "  %-10s [%s] ${c_d}%s${c_0} → %s\n" "$id" "$proj" "$auto" "$(_fm "$f" title | sed 's/^\"//;s/\"$//')"
     $dry && continue
 
     ( CODE_ROOT="$HOME/Projects" \
-      claude -p "$(cat "$f")
+      "$CLAUDE" -p "$(cat "$f")
 
-You are executing ONE task for the owner.
+You are executing ONE task for Nathan.
 
 PROJECT: $proj   PATH: $path   AUTONOMY: $auto
 
-Read first: $R/shared-memory/OVERVIEW.md, $R/workspace-coding/MEMORY.md,
+Read first: $R/shared-memory/OVERVIEW.md, $R/$(_workspace_for "$(_fm "$f" domain)")/MEMORY.md,
 and that project's own CLAUDE.md if present.
 
 AUTONOMY RULES — these are absolute:
@@ -268,21 +368,32 @@ AUTONOMY RULES — these are absolute:
 - auto-merge      : implement, verify, may merge to main if checks pass.
 Never act outside $path. Never touch another project.
 
-When finished, append 2-5 summary lines to the right nathanbot workspace dated note
-per the write-back contract in $R/AGENTS.md." \
+When finished, append 2-5 terse summary lines to
+$R/$(_workspace_for "$(_fm "$f" domain)")/memory/$(date +%F).md (create it if missing).
+That is the correct workspace for this task's domain ($(_fm "$f" domain)) — writing there
+is how the per-domain memory split actually fills up. See $R/AGENTS.md for the contract." \
       --permission-mode acceptEdits > "$R/tasks/.log-$id.txt" 2>&1
       rc=$?
       if [ "$rc" -eq 0 ]; then
         sed -i '' 's/^status: ready/status: done/' "$f" 2>/dev/null
+        _log_decision "$f" run-ok "rc=0"          # outcome -> learning signal
         mv "$f" "$DONE/" 2>/dev/null
       else
         # FAILED: keep the task open and mark it, never file as complete
         sed -i '' 's/^status: ready/status: failed/' "$f" 2>/dev/null
+        _log_decision "$f" run-fail "rc=$rc"       # outcome -> learning signal
         printf '\nlast-run: FAILED rc=%s see tasks/.log-%s.txt\n' "$rc" "$id" >> "$f"
       fi
     ) &
     running=$((running+1))
-    [ "$running" -ge "$max" ] && { wait -n 2>/dev/null || wait; running=$((running-1)); }
+    # `wait -n` needs bash 4.3+; system /bin/bash is 3.2 — fall back to waiting the batch
+    if [ "$running" -ge "$max" ]; then
+      if [ "${BASH_VERSINFO[0]}" -ge 5 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 3 ]; }; then
+        wait -n; running=$((running-1))
+      else
+        wait; running=0
+      fi
+    fi
   done
   $dry && { printf "${c_d}(dry run — nothing executed)${c_0}\n"; return 0; }
   wait
@@ -290,18 +401,58 @@ per the write-back contract in $R/AGENTS.md." \
 }
 
 cmd_done() {
-  [ $# -gt 0 ] || die "usage: nb done <id>"
-  local f; f=$(ls "$OPEN"/*"$1"*.md 2>/dev/null | head -1)
-  [ -z "$f" ] && die "no open task matching '$1'"
-  _log_decision "$f" complete
+  [ $# -gt 0 ] || die "usage: nb done <id> [outcome note — what worked / what didn't]"
+  local id="$1"; shift; local note="$*"
+  local f; f=$(ls "$OPEN"/*"$id"*.md 2>/dev/null | head -1)
+  [ -z "$f" ] && die "no open task matching '$id'"
+  _log_decision "$f" complete "$note"
   sed -i '' 's/^status: .*/status: done/' "$f" 2>/dev/null
   mv "$f" "$DONE/"
   printf "${c_g}done${c_0} %s\n" "$(basename "$f")"
 }
 
-# ── decision journal: every choice the owner makes becomes signal ───────────────
+# ── feedback: explicit "do this differently" — the strongest learning signal ─
+cmd_feedback() {
+  local note="$*"
+  [ -z "${note// }" ] && die "usage: nb feedback \"<what I should do differently>\""
+  local jf="$R/tasks/.feedback.jsonl" src="${NB_FEEDBACK_SRC:-explicit}"
+  python3 - "$note" "$jf" "$src" <<'PY'
+import json, sys, datetime
+note, jf, src = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(jf, "a") as fh:
+    fh.write(json.dumps({
+        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        "source": src, "note": note,
+    }) + "\n")
+PY
+  printf "${c_g}feedback logged${c_0} — 'nb learn' folds it into how I work (highest-priority signal)\n"
+}
+
+# ── remember: file DURABLE knowledge into nathanbot's brain (every harness sees it) ─
+cmd_remember() {
+  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  local note="$*"
+  [ -z "${note// }" ] && die "usage: nb remember \"<a fact or rule to keep>\""
+  printf "${c_b}Filing to nathanbot's brain...${c_0}\n"
+  "$CLAUDE" -p "Nathan wants to durably remember this in nathanbot so EVERY harness (Claude Code,
+Codex, OpenClaw, the web/voice operator) sees it — never siloed in one harness's private memory:
+
+\"$note\"
+
+Route it to the RIGHT home (read $R/wiki/storage-policy.md + $R/AGENTS.md first):
+- A coding/behavioral RULE or convention -> add a terse bullet to $R/wiki/pages/conventions.md.
+- A durable FACT about his world/ventures -> the right $R/wiki/pages/*.md (create if needed;
+  then update $R/wiki/index.md and $R/wiki/log.md).
+- A preference for how to work with him -> conventions.md if cross-harness.
+No duplication; keep it terse. Then print ONE line: what you saved and where." \
+    --permission-mode acceptEdits \
+    --allowedTools "Read" "Write" "Edit" "Grep" "Glob" 2>&1 | tail -8
+  printf "${c_g}remembered${c_0} — rides the next push, or 'nb sync' now\n"
+}
+
+# ── decision journal: every choice Nathan makes becomes signal ───────────────
 _log_decision() {
-  local f="$1" action="$2"
+  local f="$1" action="$2" note="${3:-}"
   # canonical action vocabulary (UI passes target status; CLI passes the verb)
   case "$action" in
     ready)   action=approve ;;
@@ -309,9 +460,10 @@ _log_decision() {
     done)    action=resolve ;;
   esac
   local jf="$R/tasks/.decisions.jsonl"
-  python3 - "$f" "$action" "$jf" <<'PYEOF'
+  python3 - "$f" "$action" "$jf" "$note" <<'PYEOF'
 import json, sys, re, datetime, os
 f, action, jf = sys.argv[1], sys.argv[2], sys.argv[3]
+note = sys.argv[4] if len(sys.argv) > 4 else ""
 try:
     t = open(f).read()
 except Exception:
@@ -331,6 +483,7 @@ rec = {
     "priority": fm.get("priority"), "from_status": fm.get("status"),
     "created": fm.get("created"),
     "age_days": None,
+    "note": note or None,
 }
 try:
     c = datetime.date.fromisoformat(fm.get("created", ""))
@@ -385,6 +538,8 @@ cmd_decide() {
 cmd_audit()  { "$R/scripts/audit.sh"; }
 cmd_new()    { "$R/scripts/new-project.sh" "$@"; }
 cmd_sync()   {
+  # the chat/voice operator must not push to GitHub unattended
+  [ -n "${NB_OPERATOR:-}" ] && die "nb sync is disabled for the operator — Nathan runs it (or the nightly job does)"
   cd "$R" && git add -A && git commit -qm "${1:-chore: sync nathanbot}" 2>/dev/null
   git remote get-url origin >/dev/null 2>&1 && git push -q 2>/dev/null && printf "${c_g}synced${c_0}\n" \
     || printf "${c_y}committed locally (no remote configured)${c_0}\n"
@@ -394,7 +549,8 @@ usage() { awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_S
 
 # ── brief: the Jarvis moment. Runs daily, speaks first. ──────────────────────
 cmd_brief() {
-  local quiet=false; [ "${1:-}" = "--quiet" ] && quiet=true
+  local quiet=false speak=false deliver=false
+  for a in "$@"; do case "$a" in --quiet) quiet=true ;; --speak) speak=true ;; --deliver) deliver=true ;; esac; done
   local out="$R/tasks/.brief-$(date +%Y-%m-%d).md"
   local ready=0 blocked=0 decide=0
   for f in "$OPEN"/*.md; do
@@ -404,9 +560,36 @@ cmd_brief() {
     esac
   done
 
+  if $speak || $deliver; then
+    local h g s pl; h=$(date +%H); g="Hello"
+    [ "$h" -lt 12 ] && g="Good morning"
+    { [ "$h" -ge 12 ] && [ "$h" -lt 17 ]; } && g="Good afternoon"
+    [ "$h" -ge 17 ] && g="Good evening"
+    pl=""; [ "$decide" -ne 1 ] && pl="s"
+    if [ "$decide" -gt 0 ]; then s="$g, Nathan. $decide decision$pl waiting on you, $ready ready to run."
+    elif [ "$ready" -gt 0 ]; then s="$g, Nathan. Nothing needs you. $ready ready to run."
+    else s="$g, Nathan. All systems nominal. Nothing waiting."; fi
+    # detached so the audio survives SwiftBar/launchd killing our process group
+    if $speak; then . "$R/scripts/lib/detach.sh"; nb_detach "$R/scripts/speak.sh" "$s"; fi
+    if $deliver; then
+      local msg="$s"
+      # today's next event across all calendars (best-effort; silent if cal unset)
+      local nextev; nextev=$(python3 "$R/scripts/google/gcalendar.py" agenda --all --days 1 2>/dev/null | grep -m1 '^  ' | sed 's/^  *//')
+      [ -n "$nextev" ] && msg="$msg"$'\n'"Next: $nextev"
+      if [ "$decide" -gt 0 ]; then
+        msg="$msg"$'\n'"Waiting on you:"
+        for f in "$OPEN"/*.md; do
+          [ -e "$f" ] || continue
+          [ "$(_fm "$f" status)" = "needs-decision" ] && msg="$msg"$'\n'"• $(_fm "$f" title | sed 's/^"//;s/"$//')"
+        done
+      fi
+      "$R/scripts/deliver.sh" "nathanbot — brief" "$msg" >/dev/null 2>&1 || true
+    fi
+  fi
+
   { printf "# Brief — %s\n\n" "$(date '+%A %d %B %Y')"
     printf "## Queue\n%s ready · %s blocked · %s awaiting your decision · %s untriaged\n\n" \
-      "$ready" "$blocked" "$decide" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)"
+      "$ready" "$blocked" "$decide" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)"
 
     if [ "$decide" -gt 0 ]; then
       printf "## Waiting on you\n"
@@ -453,13 +636,56 @@ cmd_brief() {
 # ── evolve: self-improvement. PROPOSES, never self-applies. ──────────────────
 cmd_evolve() {
   command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  local apply=false; [ "${1:-}" = "--apply" ] && apply=true
+  # the operator may not trigger self-modification unattended
+  [ -n "${NB_OPERATOR:-}" ] && apply=false
   local tel="$R/tasks/.telemetry.jsonl"
-  printf "${c_b}Analyzing own usage and proposing improvements...${c_0}\n"
 
-  claude -p "You are nathanbot analyzing ITSELF to propose improvements. Be concrete and evidence-based.
+  # ── SAFE-TIER AUTO-APPLY (bounded · reversible · never pushed) ─────────────
+  # Security: the system may edit ONLY its own knowledge (wiki) and tidy task
+  # titles. Code, config, capabilities, AGENTS.md, secrets, and anything outside
+  # this repo are OFF LIMITS. selfapply.sh compares against the PRE-pass dirty set,
+  # so Nathan's uncommitted work is never touched, committed, or reverted — a dirty
+  # tree no longer disables the weekly self-improvement pass. Violations revert
+  # file-by-file; staged content is secret-scanned; commits are local only.
+  if $apply; then
+    . "$R/scripts/lib/selfapply.sh"
+    sa_begin
+    printf "${c_b}Applying safe-tier self-improvements...${c_0}\n"
+    "$CLAUDE" -p "You are nathanbot improving ITSELF. Apply ONLY safe-tier fixes, now.
+
+YOU MAY EDIT ONLY THESE:
+- $R/wiki/pages/*.md, $R/wiki/index.md, $R/wiki/log.md   (fix stale/wrong/orphaned knowledge)
+- $R/tasks/open/*.md                                      (fix a typo'd title / obvious mislabel ONLY)
+
+ABSOLUTE BOUNDS — never, for any reason:
+- Do NOT touch code ($R/bin, $R/scripts, $R/ui), config ($R/config/*.json), capabilities,
+  $R/AGENTS.md, anything under ~/.secrets, or ANY path outside $R.
+- Do NOT change autonomy/permissions/identities or anything security-relevant.
+- Do NOT delete files. Small, high-confidence, reversible edits only.
+
+Evidence — audit:
+$("$R/scripts/audit.sh" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | head -40)
+
+Only change what you are confident is correct AND safe. If nothing qualifies, change nothing.
+Print one line per edit." \
+      --permission-mode acceptEdits \
+      --allowedTools "Read" "Edit" "Write" "Grep" "Glob" 2>&1 | tail -20
+
+    # GUARD — selfapply keeps only allowlisted NEW changes, reverts violations
+    # per-file (never Nathan's pre-existing edits), secret-scans, commits locally.
+    sa_commit '^(wiki/|tasks/open/)' "auto-evolve: safe-tier self-improvement
+
+Applied by 'nb evolve --apply' (wiki/task hygiene only). Not pushed.
+Reversible: git revert HEAD" || printf "${c_d}(nothing applied)${c_0}\n"
+  fi
+
+  printf "${c_b}Analyzing own usage and proposing deeper improvements...${c_0}\n"
+
+  "$CLAUDE" -p "You are nathanbot analyzing ITSELF to propose improvements. Be concrete and evidence-based.
 
 EVIDENCE — read all of these:
-1. Usage telemetry (what the owner actually runs, how often, what fails):
+1. Usage telemetry (what Nathan actually runs, how often, what fails):
 $( [ -f "$tel" ] && tail -200 "$tel" || echo "(no telemetry yet)")
 
 2. Audit output:
@@ -481,8 +707,15 @@ ANALYZE:
 OUTPUT — create task files in $OPEN/ starting at id $(next_id), frontmatter matching
 existing tasks there, with:
   project: nathanbot
-  status: needs-decision      <-- ALWAYS. You propose; the owner approves.
   domain: ops
+  status: two tiers —
+    ready           <- ONLY for pure hygiene with zero judgment (fix a stale doc line,
+                       repair a broken link, correct an obvious typo'd label). These
+                       auto-approve so the queue doesn't silt up with trivia.
+    needs-decision  <- EVERYTHING else: behavior changes, new capabilities, deletions,
+                       anything security- or identity-adjacent. Nathan approves.
+
+$TASK_STYLE
 
 Propose 2-5 improvements, highest leverage first. Each must cite the specific evidence
 that motivated it. Do NOT modify any existing file — only create proposal tasks.
@@ -495,9 +728,9 @@ Then print a short summary of what you proposed and why." --permission-mode acce
 cmd_scout() {
   command -v claude >/dev/null 2>&1 || die "claude CLI not found"
   printf "${c_b}Scouting new tools and systems...${c_0}\n"
-  claude -p "Research tools, systems, or techniques the owner should know about.
+  "$CLAUDE" -p "Research tools, systems, or techniques Nathan should know about.
 
-HIS CONTEXT: read $R/shared-memory/OVERVIEW.md and $R/wiki/pages/owner.md.
+HIS CONTEXT: read $R/shared-memory/OVERVIEW.md and $R/wiki/pages/nathan.md.
 Stack: Expo/React Native, Next.js, Cloudflare Workers, AWS SAM/Lambda, Python, ESP32.
 He runs an AI-agnostic personal system (nathanbot) and cares about agent harnesses,
 memory systems, automation, and developer productivity.
@@ -513,6 +746,7 @@ For each genuinely worthwhile finding (max 3, quality over quantity):
 - Add it to $R/wiki/index.md and log in $R/wiki/log.md.
 - If it's genuinely worth acting on, ALSO create a task in $OPEN/ with
   project: nathanbot, status: needs-decision.
+  $TASK_STYLE
 
 If nothing meets the bar, say so plainly and create nothing. An empty scout is a valid result." --permission-mode acceptEdits 2>&1 | tail -30
 }
@@ -520,6 +754,8 @@ If nothing meets the bar, say so plainly and create nothing. An empty scout is a
 # ── tidy: machine maintenance. Reports by default; --apply for safe actions. ─
 cmd_tidy() {
   local apply=false; [ "${1:-}" = "--apply" ] && apply=true
+  # the chat operator may report, but not delete unattended
+  [ -n "${NB_OPERATOR:-}" ] && apply=false
   printf "${c_b}Machine tidy %s${c_0}\n" "$($apply && echo '(applying safe actions)' || echo '(report only — use --apply)')"
 
   printf "\n${c_b}Disk${c_0}\n  free: %s\n" "$(df -h / | tail -1 | awk '{print $4}')"
@@ -566,10 +802,16 @@ cmd_tidy() {
 _telemetry() {
   local cmd="${1:-none}" started="$2" rc="$3"
   local dur=$(( $(date +%s) - started ))
+  # rotation: append-only logs must not grow forever. >5MB -> keep one .old generation.
+  local jf
+  for jf in "$R/tasks/.telemetry.jsonl" "$R/tasks/.decisions.jsonl" "$R/tasks/.feedback.jsonl"; do
+    [ -f "$jf" ] && [ "$(stat -f %z "$jf" 2>/dev/null || echo 0)" -gt 5242880 ] \
+      && mv "$jf" "$jf.old" 2>/dev/null
+  done
   printf '{"ts":"%s","cmd":"%s","dur_s":%s,"rc":%s,"open":%s,"inbox":%s}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cmd" "$dur" "$rc" \
     "$(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ')" \
-    "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null || echo 0)" \
+    "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)" \
     >> "$R/tasks/.telemetry.jsonl" 2>/dev/null
 }
 _T0=$(date +%s); _CMD="${1:-help}"
@@ -587,30 +829,47 @@ case "${1:-}" in
   decide) shift; cmd_decide "$@" ;;
   audit)  cmd_audit ;;
   brief)  shift; cmd_brief "$@" ;;
-  evolve) cmd_evolve ;;
+  evolve) shift; cmd_evolve "$@" ;;
   scout)  cmd_scout ;;
   tidy)   shift; cmd_tidy "$@" ;;
   new)    shift; cmd_new "$@" ;;
   sync)   shift; cmd_sync "$@" ;;
-  schedule) shift; "$R/scripts/schedule.sh" "$@" ;;
+  schedule) shift
+            [ -n "${NB_OPERATOR:-}" ] && die "nb schedule is disabled for the operator (persistence changes are Nathan's call)"
+            "$R/scripts/schedule.sh" "$@" ;;
   profile)  shift; "$R/scripts/profile.sh" "$@" ;;
   perms|permissions) shift; "$R/scripts/permissions.sh" "$@" ;;
   project|proj) shift; "$R/scripts/project.sh" "$@" ;;
   _logdecision) shift; _log_decision "$1" "$2" ;;
   discuss|talk) shift; "$R/scripts/discuss.sh" "$@" ;;
   learn)    shift; "$R/scripts/learn.sh" "$@" ;;
+  feedback) shift; cmd_feedback "$@" ;;
+  remember|memorize) shift; cmd_remember "$@" ;;
+  watch)    shift; "$R/scripts/watch.sh" "$@" ;;
+  jarvis)   shift; python3 "$R/scripts/voice/jarvis.py" "$@" ;;
+  speak|say) shift; "$R/scripts/speak.sh" "$@" ;;
+  deliver)   shift; "$R/scripts/deliver.sh" "$@" ;;
+  study)    shift; "$R/scripts/study.sh" "$@" ;;
+  wiki)     shift; "$R/scripts/wiki.sh" "$@" ;;
+  today)    open "obsidian://daily" 2>/dev/null || open -a Obsidian 2>/dev/null || die "Obsidian not found" ;;
+  digest)   shift; "$R/scripts/digest.sh" "$@" ;;
   groom)    shift; "$R/scripts/groom.sh" "$@" ;;
-  build-ui) shift; "$R/scripts/build-ui.sh" ;;
+  build-app) shift; "$R/scripts/build-app.sh" ;;
   ui|open)  shift
-            curl -s -o /dev/null http://127.0.0.1:7777/ 2>/dev/null \
-              && open -a nathanbot 2>/dev/null || open http://127.0.0.1:7777 \
-              || python3 "$R/ui/server.py" ;;
+            # start the server first if it's down, THEN open the app (never a dead tab)
+            if ! curl -s -o /dev/null --max-time 1 http://127.0.0.1:7777/ 2>/dev/null; then
+              launchctl kickstart "gui/$(id -u)/com.nathanbot.ui" 2>/dev/null \
+                || (nohup python3 "$R/ui/server.py" >/dev/null 2>&1 &)
+              sleep 1
+            fi
+            open -a nathanbot 2>/dev/null || open "$HOME/Applications/nathanbot.app" 2>/dev/null \
+              || open http://127.0.0.1:7777 ;;
   mail)     shift
             case "${1:-status}" in
               login|status|verify) python3 "$R/scripts/google/auth.py" "$@" ;;
               *) python3 "$R/scripts/google/gmail.py" "$@" ;;
             esac ;;
-  cal)      shift; python3 "$R/scripts/google/calendar.py" "$@" ;;
+  cal)      shift; python3 "$R/scripts/google/gcalendar.py" "$@" ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1  (try: nb help)" ;;
 esac

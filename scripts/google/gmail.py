@@ -7,11 +7,13 @@
   gmail.py --account <k> send <draft-id> --yes <account-key>
   gmail.py --account <k> labels
 """
-import argparse, base64, sys, pathlib
+import argparse, base64, os, sys, pathlib
 from email.mime.text import MIMEText
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import auth  # noqa: E402
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def permission(path):
@@ -34,7 +36,7 @@ def require(path, what):
                  f"   {what}\n   Change that file if this should be allowed.")
     sys.exit(f"\n⛔ PERMISSION REQUIRED — '{path}' is set to ASK.\n"
              f"   {what}\n"
-             f"   the owner must approve this explicitly. To allow it permanently, set\n"
+             f"   Nathan must approve this explicitly. To allow it permanently, set\n"
              f"   \"{path}\" -> level: \"always\" in config/permissions.json")
 
 
@@ -83,6 +85,14 @@ def cmd_read(a):
     if not a.approved:
         require("email.read_bodies",
                 f"Reading the full body of message {a.id}. Subjects/metadata are always allowed; bodies are not.")
+    else:
+        # --approved is model-mintable; keep an audit trail of every body read
+        import datetime
+        logdir = ROOT / "tasks" / "logs"
+        logdir.mkdir(parents=True, exist_ok=True)
+        with open(logdir / "gmail-reads.log", "a") as fh:
+            fh.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} "
+                     f"account={a.account} msg={a.id} operator={bool(os.environ.get('NB_OPERATOR'))}\n")
     s, _ = svc(a.account)
     d = s.users().messages().get(userId="me", id=a.id, format="full").execute()
     h = headers(d["payload"])
@@ -105,6 +115,14 @@ def cmd_draft(a):
 
 
 def cmd_send(a):
+    # HARD FUSE: the chat/voice operator can never send — --yes is a restatement the
+    # model could mint itself. Sending is Nathan's act, from his own shell.
+    if os.environ.get("NB_OPERATOR"):
+        sys.exit("\n❌ REFUSED — sending email is disabled for the operator.\n"
+                 "   The draft is ready; Nathan sends it himself:  nb mail --account "
+                 f"{a.account} send {a.id} --yes {a.account}")
+    if permission("email.send") == "never":
+        require("email.send", "Sending is disabled in config/permissions.json.")
     # the account must be restated — a bare --yes is too easy to add reflexively
     if a.yes != a.account:
         sys.exit(
@@ -139,7 +157,7 @@ if __name__ == "__main__":
     s1 = sub.add_parser("search"); s1.add_argument("query"); s1.add_argument("--limit", type=int, default=10)
     s2 = sub.add_parser("read"); s2.add_argument("id")
     s2.add_argument("--approved", action="store_true",
-                    help="the owner explicitly approved reading this body in the conversation")
+                    help="Nathan explicitly approved reading this body in the conversation")
     s3 = sub.add_parser("draft")
     s3.add_argument("--to", required=True); s3.add_argument("--subject", required=True); s3.add_argument("--body", required=True)
     s4 = sub.add_parser("send"); s4.add_argument("id"); s4.add_argument("--yes", required=True, help="must restate the account key")

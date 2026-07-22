@@ -1,0 +1,4 @@
+ctranslate2==4.8.1
+faster-whisper==1.2.1
+pvporcupine==4.0.3
+pvrecorder==1.2.7

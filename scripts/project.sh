@@ -85,7 +85,7 @@ Capabilities: ${caps:-none}
 - (none yet)
 
 ## Links
-[[owner]] · [[index]]
+[[nathan]] · [[index]]
 EOF
   grep -q "\[\[$key\]\]" "$R/wiki/index.md" || \
     printf -- "- [[%s]] — new project\n" "$key" >> "$R/wiki/index.md"

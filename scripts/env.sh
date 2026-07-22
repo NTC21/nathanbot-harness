@@ -2,5 +2,6 @@
 # source this to load secrets + env into the shell
 set -a
 [ -f "$HOME/.secrets/ai-hub.env" ] && . "$HOME/.secrets/ai-hub.env"
-[ -f "$(dirname "$0")/../.env" ] && . "$(dirname "$0")/../.env"
+# BASH_SOURCE, not $0 — this file is SOURCED, so $0 is the caller's path
+[ -f "$(dirname "${BASH_SOURCE[0]}")/../.env" ] && . "$(dirname "${BASH_SOURCE[0]}")/../.env"
 set +a

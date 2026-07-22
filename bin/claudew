@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# claudew — claude wrapper: the "never run out" choke point.
+#
+# Runs the real claude CLI untouched. If the reply is a usage-limit refusal,
+# transparently retries the IDENTICAL invocation against the local fallback
+# brain: Ollama's native Anthropic-format API (/v1/messages on :11434).
+# If Ollama is down it tries to start it once; if that fails, the original
+# output and exit code surface unchanged — silent degradation.
+#
+# Never parses or modifies argv: --allowedTools, --permission-mode, NB_OPERATOR
+# etc. pass through byte-identical, so the operator's safety fuses hold on the
+# local model too.
+#
+#   NB_CLAUDE_BIN          override the real claude binary
+#   NB_OLLAMA_PORT         Ollama port (default 11434)
+#   NB_OLLAMA_MODEL        local model (default qwen3:8b)
+#   NB_CLAUDE_LIMIT_REGEX  override the usage-limit detector
+set -uo pipefail
+R="$(cd "$(dirname "$0")/.." && pwd)"
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin"   # launchd gives a bare PATH
+# no call site pipes stdin; a non-tty pipe makes claude stall 3s waiting for it
+[ -t 0 ] || exec </dev/null
+
+REAL="${NB_CLAUDE_BIN:-}"
+if [ -z "$REAL" ] || [ ! -x "$REAL" ]; then
+  for c in "$(command -v claude 2>/dev/null || true)" \
+           "$HOME/.local/bin/claude" /opt/homebrew/bin/claude \
+           /usr/local/bin/claude "$HOME/.claude/local/claude"; do
+    [ -n "$c" ] && [ -x "$c" ] && [ "$c" != "$0" ] && { REAL="$c"; break; }
+  done
+fi
+[ -n "${REAL:-}" ] && [ -x "$REAL" ] || { echo "claudew: claude CLI not found" >&2; exit 127; }
+
+out="$(mktemp)"; err="$(mktemp)"
+trap 'rm -f "$out" "$err"' EXIT
+"$REAL" "$@" >"$out" 2>"$err"; rc=$?
+
+PORT="${NB_OLLAMA_PORT:-11434}"
+MODEL="${NB_OLLAMA_MODEL:-qwen3:8b}"
+LIMIT_RE="${NB_CLAUDE_LIMIT_REGEX:-usage limit reached|rate limit|overloaded|529|credit balance is too low}"
+
+_emit() { cat "$out"; cat "$err" >&2; exit "$rc"; }
+_up() { curl -s --connect-timeout 1 --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; }
+
+# limit-shaped failure? (rc!=0 + pattern, or the CLI's bare "…reached|<epoch>" stdout form)
+hit=""
+if [ "$rc" -ne 0 ] && grep -qiE "$LIMIT_RE" "$out" "$err" 2>/dev/null; then hit=1; fi
+grep -qiE '^claude ai usage limit reached\|[0-9]+' "$out" 2>/dev/null && hit=1
+[ -n "$hit" ] || _emit
+
+# Ollama down? try to wake it once, then give up quietly
+if ! _up; then
+  if command -v ollama >/dev/null 2>&1; then
+    ( nohup ollama serve >/dev/null 2>&1 & ) 2>/dev/null
+    for _ in 1 2 3 4 5; do sleep 1; _up && break; done
+  fi
+fi
+_up || _emit
+
+# log the brownout so the HUD + telemetry show "capped -> local brain"
+printf '{"ts":"%s","cmd":"claude-fallback","dur_s":0,"rc":0}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$R/tasks/.telemetry.jsonl" 2>/dev/null || true
+
+# Ollama serves Anthropic /v1/messages natively; the model envs point every
+# CLI model alias at the local one
+exec env ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" ANTHROPIC_API_KEY="nb-local" \
+         ANTHROPIC_MODEL="$MODEL" ANTHROPIC_SMALL_FAST_MODEL="$MODEL" \
+         ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL" ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL" \
+         ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL" \
+         "$REAL" "$@"

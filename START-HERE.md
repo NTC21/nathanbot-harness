@@ -1,81 +1,92 @@
 # START HERE — first run
 
-New here? This gets nathanbot working on your machine in a few minutes.
+Fifteen minutes from clone to a talking assistant. macOS steps below; Windows users:
+do the same inside WSL2 and see the Windows table in [README.md](README.md).
 
-## 1. Copy the example configs
-Real config is gitignored; the repo ships templates with placeholder values. Copy each one and
-fill in your details.
+## 1. Make the brain yours
+
 ```bash
 for f in config/*.example.json; do cp "$f" "${f%.example.json}.json"; done
 ```
-Then edit the copies — most importantly `config/accounts.json` (your email identities) and
-`config/paths.json` (machine paths).
 
-## 2. Set up secrets
-Secrets never go in the repo. Create a private vault and keep tokens/keys there.
+Then edit, in order of importance:
+
+1. **`shared-memory/OVERVIEW.md`** — who you are, what you're working on, your hard
+   rules. Every AI call reads this first; quality here caps quality everywhere.
+2. **`config/projects.json`** — your repos + how autonomous the task engine may be in
+   each (`auto-merge` / `auto-pr` / `review-required`).
+3. **`config/permissions.json`** — what the assistant may do without asking. Defaults
+   are conservative; change levels later with `nb perms set <path> <always|ask|never>`.
+4. **`config/accounts.json`** — your email/calendar identities. Only mark an account
+   authorized once you've actually connected it (step 6).
+
+## 2. The CLI
+
 ```bash
-mkdir -p ~/.secrets && chmod 700 ~/.secrets
-```
-`.env.example` lists the variable names your environment expects — copy it to `.env` (untracked)
-and point values at your vault.
-
-## 3. Put `nb` on your PATH (optional)
-```bash
-echo 'export PATH="$PWD/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
-```
-
-## 4. Connect email / calendar (optional)
-If you want the assistant to read/draft mail or manage calendar, configure your identities in
-`config/accounts.json`: list each identity and mark exactly one as the authorized default. The
-rest stay not-authorized until you explicitly enable them.
-
-## 5. Run the dashboard
-```bash
-cd ui && npm install && npm run dev
+echo "export PATH=\"$PWD/bin:\$PATH\"" >> ~/.zshrc && source ~/.zshrc
+nb add "my first captured thought"    # capture → auto-triaged into a task
+nb next                               # what to work on
+nb brief                              # the daily briefing, on demand
 ```
 
-## The daily loop
+`nb help` is the full list. You never need most commands — capture and decide are the
+two you'll actually use; everything else runs on the schedule.
+
+## 3. Dashboard + Dock app
+
 ```bash
-nb add "whatever just occurred to you"    # capture. never blocks. do this constantly.
-nb triage                                  # AI files everything into real tasks
-nb next                                    # what to work on now
-nb run                                     # execute ready tasks in parallel
+python3 ui/server.py &        # stdlib only — no npm, no build
+open http://127.0.0.1:7777
+bash scripts/build-app.sh     # optional: installs ~/Applications/nathanbot.app
 ```
 
-## When you want to see state
+Chat in the middle; your queue, decisions, calendar, system health, and activity log
+around it. Click the orb or press Esc to stop it talking.
+
+## 4. Voice ($0, no account)
+
 ```bash
-nb brief      # what's next, what's waiting, system health
-nb status     # ready / blocked / needs-decision counts
-nb decide     # resolve the needs-decision pile (approve/defer/drop)
+brew install pipx && pipx install edge-tts && pipx ensurepath
+nb speak "Systems online."
 ```
 
-## Running on its own (optional scheduled tasks)
-Example schedule if you wire up cron/an always-on box:
-- `brief`  daily — notification + written brief
-- `tidy`   weekly — maintenance report, changes nothing
-- `evolve` weekly — proposes improvements to itself
-- `scout`  monthly — researches new tools
+Better voices, still optional:
+- **Fish Audio** (best butler voice): sign up at fish.audio, put your API key in
+  `~/.secrets/fishaudio/api_key` (`chmod 600`). Pick any library voice —
+  the id in the voice page URL is your `NB_FISH_VOICE`.
+- **Voicebox** (local, private): install the app, then `nb schedule install-voicebox`.
 
-Configure these so nothing scheduled pushes code, merges, or sends email without your approval.
+## 5. Make it ambient
 
-## Capabilities (what the assistant knows where)
 ```bash
-nb profile list                  # all capability layers
-nb profile show <path>           # what a project resolves to
-nb profile sync                  # re-apply after editing config/profiles.json
+nb schedule install     # 07:30 brief · 22:00 digest · watcher every 30 min · weekly learning
+nb schedule status
 ```
-Edit `capabilities/<name>.yaml` to teach it something once, everywhere.
 
-## Email/calendar — READ THIS
-Configure your authorized sending identity in `config/accounts.json`. The assistant must state
-which account it's acting as before drafting, and never sends without your explicit confirmation
-of both the text and the account. Sending from the wrong identity is unrecoverable — approval is
-required every time.
+Remove everything just as easily: `nb schedule remove`.
+
+## 6. Optional connections
+
+- **Google mail/calendar** — `nb mail login <account-key>` walks the OAuth flow per
+  account; reading is safe-by-default, sending always requires your explicit yes.
+- **Discord/iMessage delivery** — webhook URL in `~/.secrets/discord/webhook_url`
+  and/or `NB_IMESSAGE_TO`; the 07:30 brief fans out to them.
+- **Hands-free "Jarvis" wake word** — needs a free Picovoice key in
+  `~/.secrets/picovoice/access_key`, then `nb jarvis once` (grants mic) and
+  `nb schedule install-jarvis`.
+- **Never-run-out fallback** — `bash scripts/setup-fallback.sh install` (Ollama +
+  a local model sized to your RAM). When your subscription caps, `bin/claudew`
+  silently reroutes calls to it; the HUD shows "LOCAL BRAIN" while it's covering.
 
 ## Where things live
-- `AGENTS.md` — the contract every AI harness reads
-- `shared-memory/OVERVIEW.md` — always-loaded core (kept under ~2000 chars)
-- `wiki/pages/` — durable knowledge; open `wiki/` as an Obsidian vault for the graph. `owner.md` is the self-page.
-- `config/accounts.json` — email identities (one authorized default)
-- `config/projects.json` — per-project autonomy (auto-merge / auto-pr / review-required)
-- `config/profiles.json` — which capabilities each project gets
+
+| Path | Meaning |
+|---|---|
+| `tasks/inbox.md` → `tasks/open/` → `tasks/done/` | capture → triaged task → archive |
+| `wiki/` | long-term knowledge (open it as an Obsidian vault) |
+| `workspace-*/` | per-domain memory the AI maintains |
+| `tasks/logs/` | every scheduled job's output |
+| `~/.secrets/` | all keys, outside the repo, mode 700 |
+
+Something broken? `nb audit` self-checks the memory system; `nb jarvis status` checks
+the voice stack; `bash scripts/setup-fallback.sh status` checks the local brain.

@@ -20,12 +20,12 @@ fi
 TOPIC="${*:-}"
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
 
-PROMPT="You are interviewing the owner to build up nathanbot's memory of him. This is a CONVERSATION,
+PROMPT="You are interviewing Nathan to build up nathanbot's memory of him. This is a CONVERSATION,
 not a form. Your job is to learn things worth keeping.
 
 BEFORE ASKING ANYTHING, read so you don't re-ask what's already known:
 - $R/shared-memory/OVERVIEW.md
-- $R/wiki/pages/owner.md
+- $R/wiki/pages/nathan.md
 - $R/wiki/index.md (then any page relevant to the topic)
 - the relevant $R/workspace-*/MEMORY.md
 
