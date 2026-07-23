@@ -325,6 +325,12 @@ class H(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=str(R/"ui"/"web"), **k)
 
+    def end_headers(self):
+        # never let WKWebView (Dock app) or a browser cache the UI — otherwise a
+        # code update silently keeps showing the old page until a manual reload
+        self.send_header("Cache-Control", "no-store, must-revalidate")
+        super().end_headers()
+
     def _json(self, obj, code=200):
         b = json.dumps(obj).encode()
         self.send_response(code)
@@ -356,6 +362,20 @@ class H(http.server.SimpleHTTPRequestHandler):
                 if not self._local_ok():
                     return self._json({"ok": False, "error": "forbidden"}, 403)
                 return self._json(state())
+            if urllib.parse.urlparse(self.path).path == "/api/miclog":
+                # mic diagnostics from the client (Dock app can't show devtools) —
+                # appends one line to tasks/logs/mic.log so failures are readable.
+                import time as _t
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                msg = (q.get("m", [""])[0])[:400]
+                try:
+                    lf = R / "tasks" / "logs" / "mic.log"
+                    lf.parent.mkdir(parents=True, exist_ok=True)
+                    with open(lf, "a") as fh:
+                        fh.write(_t.strftime("%H:%M:%S ") + msg + "\n")
+                except Exception:
+                    pass
+                return self._json({"ok": True})
             # SPA: unknown non-asset paths fall back to index.html
             p = urllib.parse.urlparse(self.path).path
             if p != "/" and not (R/"ui"/"web"/p.lstrip("/")).exists():
@@ -392,9 +412,44 @@ class H(http.server.SimpleHTTPRequestHandler):
             nb("add", body["text"], timeout=30)
             return self._json({"ok": True})
 
+        if path == "/api/transcribe":
+            # transcribe audio the CLIENT recorded (Dock app: WKWebView getUserMedia
+            # -> MediaRecorder -> base64). Mic access happens in the app process,
+            # where macOS TCC can actually prompt; the server just runs whisper on
+            # the uploaded bytes and never touches the microphone itself.
+            import base64, tempfile
+            b64 = body.get("audio") or ""
+            mime = (body.get("mime") or "").lower()
+            if not b64:
+                return self._json({"ok": False, "error": "no audio"}, 400)
+            ext = ".mp4" if "mp4" in mime else ".webm" if "webm" in mime else ".ogg" if "ogg" in mime else ".wav"
+            try:
+                raw = base64.b64decode(b64)
+            except Exception:
+                return self._json({"ok": False, "error": "bad audio encoding"}, 400)
+            tmp = tempfile.mktemp(suffix=ext, dir=tempfile.gettempdir())
+            try:
+                with open(tmp, "wb") as fh:
+                    fh.write(raw)
+                r = subprocess.run(
+                    ["python3", str(R/"scripts"/"voice"/"jarvis.py"), "stt", tmp],
+                    capture_output=True, text=True, timeout=60, env=NB_ENV)
+                text = _strip_ansi(r.stdout).strip().splitlines()[-1] if r.stdout.strip() else ""
+                if r.returncode == 0 and text:
+                    return self._json({"ok": True, "text": text})
+                return self._json({"ok": False, "error": "Didn't catch that — try again."})
+            except subprocess.TimeoutExpired:
+                return self._json({"ok": False, "error": "transcription timed out"})
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
         if path == "/api/listen":
-            # record one utterance via the local voice stack -> return the transcript.
-            # Used by the Dock app, where WKWebView has no browser speech API.
+            # legacy server-side recording (pvrecorder). Only works when the server
+            # process itself holds a mic grant — the Dock app now records client-side
+            # via /api/transcribe instead. Kept for the `nb jarvis` Terminal path.
             try:
                 r = subprocess.run(
                     ["python3", str(R/"scripts"/"voice"/"jarvis.py"), "capture"],
@@ -486,6 +541,9 @@ class H(http.server.SimpleHTTPRequestHandler):
                     "Read", "Grep", "Glob", "Edit", "Write", "WebSearch", "WebFetch",
                     f"Bash({NB}:*)",
                     f"Bash(python3 {R}/scripts/google/gmail.py:*)",
+                    # solo events/reminders only — attendee invites + RSVPs
+                    # hard-refuse inside gcalendar.py under NB_OPERATOR
+                    f"Bash(python3 {R}/scripts/google/gcalendar.py:*)",
                     "--disallowedTools",
                     f"Read({home}/.secrets/**)", f"Grep({home}/.secrets/**)",
                     f"Glob({home}/.secrets/**)", f"Edit({home}/.secrets/**)",

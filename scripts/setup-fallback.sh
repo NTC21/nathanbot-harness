@@ -43,8 +43,9 @@ case "${1:-status}" in
     printf "  %-14s %s\n" "ollama:" "$o"
     if command -v ollama >/dev/null 2>&1 && ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$MODEL"; then m="$MODEL pulled"; else m="$MODEL NOT PULLED"; fi
     printf "  %-14s %s\n" "model:" "$m"
-    # the exact endpoint claudew will hit
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -X POST "http://127.0.0.1:$PORT/v1/messages" \
+    # the exact endpoint claudew will hit (first call after idle loads the
+    # model into RAM, so give it time)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 45 -X POST "http://127.0.0.1:$PORT/v1/messages" \
       -H 'content-type: application/json' -H 'x-api-key: x' \
       -d "{\"model\":\"$MODEL\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}" 2>/dev/null)
     printf "  %-14s %s\n" "anthropic api:" "$([ "$code" = "200" ] && echo "/v1/messages OK" || echo "unreachable (HTTP ${code:-000})")"

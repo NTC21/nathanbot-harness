@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # study.sh — ingest external knowledge into nathanbot's wiki so it gets better at
-# doing Nathan's tasks. Give it a URL, a file, or piped/typed text; it distills the
+# doing the owner's tasks. Give it a URL, a file, or piped/typed text; it distills the
 # genuinely durable parts into a reference wiki page it can consult later.
 #
 #   nb study <url>
@@ -32,10 +32,10 @@ esac
 
 printf "${B}Studying (%s)...${X}\n" "$mode"
 
-"$R/bin/claudew" -p "You are nathanbot studying external material to get BETTER at Nathan's work.
+"$R/bin/claudew" -p "You are nathanbot studying external material to get BETTER at the owner's work.
 $srcline
 
-Nathan's context: read $R/shared-memory/OVERVIEW.md and $R/wiki/pages/nathan.md so you
+the owner's context: read $R/shared-memory/OVERVIEW.md and $R/wiki/pages/owner.md so you
 judge relevance to HIM specifically (AI systems, agent harnesses, his stack, his ventures).
 
 Extract only the DURABLE, reusable knowledge — techniques, patterns, mental models, facts
@@ -43,7 +43,7 @@ he'd want on tap later. Skip fluff, news, and anything time-bound.
 
 WRITE a reference wiki page at $R/wiki/pages/<slug>.md following $R/wiki/SCHEMA.md
 (type: reference, status: active). Include: what it is, the key takeaways, and a short
-'How nathanbot should apply this to Nathan's tasks' section. Link related pages with [[..]].
+'How nathanbot should apply this to the owner's tasks' section. Link related pages with [[..]].
 Add one line to $R/wiki/index.md and one to $R/wiki/log.md.
 
 If the material has nothing durable worth keeping, say so plainly and write nothing.

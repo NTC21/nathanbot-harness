@@ -191,6 +191,7 @@ def ask_operator(text):
     argv = [os.path.join(ROOT, "bin", "claudew"), "-p", prompt, "--permission-mode", "acceptEdits",
             "--allowedTools", "Read", "Grep", "Glob", "Edit", "Write", "WebSearch", "WebFetch",
             f"Bash({NB}:*)", f"Bash(python3 {ROOT}/scripts/google/gmail.py:*)",
+            f"Bash(python3 {ROOT}/scripts/google/gcalendar.py:*)",  # solo events only (fused)
             "--disallowedTools",
             f"Read({home}/.secrets/**)", f"Grep({home}/.secrets/**)",
             f"Glob({home}/.secrets/**)", f"Edit({home}/.secrets/**)",

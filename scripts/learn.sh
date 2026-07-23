@@ -6,7 +6,7 @@
 #   learn   → improves the model of NATHAN (preferences, patterns, priorities)
 #
 #   nb learn            analyze behavior, PROPOSE memory updates
-#   nb learn --apply    ALSO auto-apply the safe tier: edits to the model-of-Nathan pages
+#   nb learn --apply    ALSO auto-apply the safe tier: edits to the model-of-the owner pages
 #                       that trace to an EXPLICIT nb-feedback entry (guarded, local commit)
 #   nb learn --show     just show the raw behavioral evidence, no AI
 set -uo pipefail
@@ -104,11 +104,11 @@ fi
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
 EV="$(evidence)"
 
-# ── safe-tier auto-apply: encode EXPLICIT feedback into the model-of-Nathan pages ──
+# ── safe-tier auto-apply: encode EXPLICIT feedback into the model-of-the owner pages ──
 # Operator never triggers this (NB_OPERATOR guard); scheduled Monday run does.
 if [ "${1:-}" = "--apply" ] && [ -z "${NB_OPERATOR:-}" ]; then
   . "$R/scripts/lib/selfapply.sh"
-  printf "%sApplying explicit feedback to the model of Nathan...%s\n" "$B" "$X"
+  printf "%sApplying explicit feedback to the model of the owner...%s\n" "$B" "$X"
   sa_begin
   "$R/bin/claudew" -p "You are nathanbot updating its model of NATHAN — apply ONLY what he explicitly said.
 
@@ -116,7 +116,7 @@ SOURCE OF TRUTH — his explicit corrections (tasks/.feedback.jsonl):
 $(tail -40 "$FB" 2>/dev/null || echo '(none)')
 
 YOU MAY EDIT ONLY:
-- $R/wiki/pages/nathan.md
+- $R/wiki/pages/owner.md
 - $R/shared-memory/OVERVIEW.md   (keep under ~2000 chars — trim elsewhere if needed)
 
 For each feedback entry not already reflected: add/adjust a TERSE line encoding it.
@@ -125,7 +125,7 @@ already reflected, change nothing. Print one line per edit." \
     --permission-mode acceptEdits \
     --allowedTools "Read" "Edit" "Write" "Grep" 2>&1 | tail -10
   sa_commit '^(wiki/pages/nathan\.md|shared-memory/OVERVIEW\.md)$' \
-    "auto-learn: encode explicit feedback into the model of Nathan
+    "auto-learn: encode explicit feedback into the model of the owner
 
 Applied by 'nb learn --apply' (feedback-traceable edits only). Not pushed." || true
 fi
@@ -140,7 +140,7 @@ $EV
 
 CURRENT MODEL OF HIM — read these before proposing anything:
 - $R/shared-memory/OVERVIEW.md
-- $R/wiki/pages/nathan.md
+- $R/wiki/pages/owner.md
 - $R/workspace-*/MEMORY.md
 - $R/wiki/index.md
 
@@ -161,7 +161,7 @@ ANALYZE, grounded in the evidence above:
 OUTPUT:
 - If the evidence is thin (few decisions, little usage), SAY SO PLAINLY and propose little.
   Do not invent patterns from 3 data points. Under-claiming beats over-claiming here.
-- Propose specific edits to $R/wiki/pages/nathan.md and/or $R/shared-memory/OVERVIEW.md
+- Propose specific edits to $R/wiki/pages/owner.md and/or $R/shared-memory/OVERVIEW.md
   (bounded ~2000 chars — if it would overflow, move detail to the wiki and link).
 - SHOW the exact proposed text. Do NOT write any file yet.
 - End with a single question that would most improve the model of him.

@@ -65,6 +65,9 @@
   .trow.blocked .pbadge,.trow.blocked .tt{color:var(--mut)}
   .trow.running .pbadge{color:var(--ready);border-color:rgba(91,179,126,.4)}
   .tt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .slabel{flex:none;font:600 8px var(--mono);letter-spacing:.14em;color:var(--mut)}
+  .trow.ready .slabel{color:var(--ready)}
+  .trow.running .slabel{color:var(--cy)}
   .decide-item{padding:7px 2px;border-bottom:1px solid rgba(90,223,255,.08)}
   .decide-item .tt{white-space:normal;font-size:12.5px;color:var(--amber)}
   .dbtns{display:flex;gap:6px;margin-top:6px}
@@ -236,7 +239,7 @@ async function stopSpeak(){ try{ await fetch("/api/speak/stop",{method:"POST"});
 $("radar").addEventListener("click",stopSpeak);                       // click the orb = hush
 document.addEventListener("keydown",e=>{ if(e.key==="Escape") stopSpeak(); });
 
-async function say(text){                 // Nathan -> nathanbot
+async function say(text){                 // the owner -> nathanbot
   if(busy || !text.trim()) return;
   busy=true; $("in").value="";
   bubble("you", text);
@@ -258,11 +261,15 @@ const ago=t=>{ if(!t)return "—"; const s=(Date.now()/1000)-t;
 
 function renderQueue(open){
   const q=open.filter(t=>t.status!=="needs-decision");
-  $("qcount").textContent=q.length?q.length+" OPEN":"";
+  const nready=q.filter(t=>t.status==="ready").length;
+  $("qcount").textContent = q.length ? (nready?`${nready} READY · `:"")+`${q.length} OPEN` : "";
+  // ready first, then by priority — and label each row's state so it's unambiguous
+  const rank={running:0,ready:1,blocked:2};
   $("queue").innerHTML = q.length
-    ? q.sort((a,b)=>(a.priority||9)-(b.priority||9)).map(t=>
+    ? q.sort((a,b)=>(rank[a.status]??3)-(rank[b.status]??3)||(a.priority||9)-(b.priority||9)).map(t=>
         `<div class="trow ${esc(t.status)}"><span class="pbadge">P${esc(t.priority||"-")}</span>
-         <span class="tt" title="${esc(unq(t.title))}">${esc(unq(t.title))}</span></div>`).join("")
+         <span class="tt" title="${esc(unq(t.title))}">${esc(unq(t.title))}</span>
+         <span class="slabel">${esc((t.status||"").toUpperCase())}</span></div>`).join("")
     : `<div class="empty">Nothing queued.</div>`;
 }
 function dropConfirm(btn,id){   // two-step: first click arms, second within 3s drops
@@ -331,9 +338,11 @@ function renderLog(tel){
 
 // ── polling + header ────────────────────────────────────────
 let statusWord="all clear";
+let lastState=null;
 async function refresh(){
   try{
     const s=await (await fetch("/api/state",{cache:"no-store"})).json();
+    lastState=s;
     const open=s.open||[];
     const d=open.filter(t=>t.status==="needs-decision").length;
     const r=open.filter(t=>t.status==="ready").length;
@@ -351,12 +360,34 @@ async function refresh(){
 setInterval(refresh,5000);
 setInterval(()=>{ $("clock").textContent=new Date().toTimeString().slice(0,8); },1000);
 
-// greeting
+// greeting — a real briefing from live state, not a canned count
 async function boot(){
   await refresh();
   const h=new Date().getHours();
   const part=h<12?"morning":h<17?"afternoon":"evening";
-  const g=`Good ${part}, sir. ${statusWord==="all clear"?"All systems nominal.":statusWord.charAt(0).toUpperCase()+statusWord.slice(1)+"."} How can I help?`;
+  const pick=a=>a[Math.floor(Math.random()*a.length)];
+  const unq=s=>String(s||"").replace(/^"|"$/g,"");
+  const s=lastState||{};
+  const open=s.open||[];
+  const decide=open.filter(t=>t.status==="needs-decision");
+  const ready=open.filter(t=>t.status==="ready");
+  const agenda=s.agenda||[];
+
+  // the substance: name what actually needs him, don't just count it
+  let body;
+  if(decide.length===1) body=`One thing needs your call: ${unq(decide[0].title)}.`;
+  else if(decide.length>1) body=`${decide.length} decisions are waiting on you.`;
+  else if(ready.length===1) body=`One task's ready to run: ${unq(ready[0].title)}.`;
+  else if(ready.length>1) body=`${ready.length} tasks are ready to run.`;
+  else body=pick(["Nothing needs you.","The board is clear.","All systems nominal."]);
+
+  // add the next event if there is one
+  let ev="";
+  if(agenda.length){ const m=(agenda[0].time||"").match(/T(\d{2}):(\d{2})/);
+    const when=m?` at ${((+m[1]%12)||12)}:${m[2]} ${+m[1]<12?"am":"pm"}`:"";
+    ev=` Your next event is ${unq(agenda[0].title)}${when}.`; }
+
+  const g=`Good ${part}. ${body}${ev}`;
   $("stageText").textContent=g.toUpperCase();
   speak(g);   // once
 }
@@ -366,27 +397,80 @@ boot();
 //    whisper stack via /api/listen (Dock app / WKWebView) ──
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const HINT="Type or press the mic — it acts and replies out loud.";
-if(SR){
+const mlog=m=>{try{fetch("/api/miclog?m="+encodeURIComponent(m))}catch(_){}};
+// The Dock app's WKWebView DEFINES webkitSpeechRecognition but it does NOT work
+// there (that API needs Speech-Recognition, not the mic entitlement we signed for).
+// Real Chrome's UA contains " Chrome/", the WKWebView's does not — use that to force
+// the getUserMedia + /api/transcribe path in the app, which macOS can actually prompt for.
+const inApp=!/ Chrome\/\d/.test(navigator.userAgent);
+mlog("boot inApp="+inApp+" SR="+!!SR+" ua="+navigator.userAgent);
+if(SR && !inApp){
   const rec=new SR(); rec.lang="en-US"; rec.interimResults=false; rec.maxAlternatives=1;
   let listening=false;
   $("mic").addEventListener("click",()=>{ if(busy)return; listening?rec.stop():rec.start(); });
   rec.onstart=()=>{ listening=true; $("mic").classList.add("on"); orb("listen"); $("hint").textContent="Listening… speak now."; };
   rec.onend=()=>{ listening=false; $("mic").classList.remove("on"); orb("pulse"); $("hint").textContent=HINT; };
   rec.onresult=e=>{ const txt=e.results[0][0].transcript; say(txt); };
-  rec.onerror=()=>{ $("hint").textContent="Mic unavailable — type instead."; };
+  rec.onerror=e=>{
+    const msg = {
+      "not-allowed": "Mic blocked — click the 🔒 by the address bar, allow Microphone, then reload.",
+      "service-not-allowed": "Mic blocked — click the 🔒 by the address bar, allow Microphone, then reload.",
+      "audio-capture": "No microphone found — check it's connected.",
+      "network": "No network — this browser's mic needs an internet connection.",
+      "no-speech": HINT,   // not a real error — you just didn't say anything in time
+    }[e.error] || `Mic error (${e.error}) — type instead.`;
+    $("hint").textContent = msg;
+  };
 }else{
-  // native shell: record + transcribe locally on the server
-  $("mic").addEventListener("click",async()=>{
-    if(busy)return;
+  // native shell (WKWebView Dock app): no Web Speech API, so record the mic
+  // HERE with getUserMedia — access happens in the app process, where macOS can
+  // actually prompt — then POST the audio to /api/transcribe (server runs whisper).
+  let mediaRec=null, chunks=[], recStream=null, recording=false;
+  const pickMime=()=>["audio/mp4","audio/webm;codecs=opus","audio/webm","audio/ogg"]
+    .find(m=>window.MediaRecorder&&MediaRecorder.isTypeSupported(m))||"";
+
+  async function startRec(){
+    if(!navigator.mediaDevices||!window.MediaRecorder){
+      mlog("no-record md="+!!navigator.mediaDevices+" mr="+!!window.MediaRecorder);
+      $("hint").textContent="This app build can't record — type instead."; return;
+    }
+    try{ recStream=await navigator.mediaDevices.getUserMedia({audio:true}); mlog("gum ok"); }
+    catch(e){
+      const nm=(e&&e.name)||"error";
+      mlog("gum err "+nm+" "+((e&&e.message)||""));
+      $("hint").textContent = nm==="NotAllowedError"
+        ? "Mic blocked — open System Settings → Privacy → Microphone, enable nathanbot, then reopen the app."
+        : `Mic failed (${nm}) — type instead.`;
+      setTimeout(()=>$("hint").textContent=HINT,6000); return;
+    }
+    const mime=pickMime();
+    chunks=[]; mediaRec=new MediaRecorder(recStream, mime?{mimeType:mime}:undefined);
+    mediaRec.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
+    mediaRec.onstop=async()=>{
+      recStream.getTracks().forEach(t=>t.stop());
+      const blob=new Blob(chunks,{type:mime||"audio/mp4"});
+      if(blob.size<800){ $("hint").textContent=HINT; return; }   // basically silence
+      $("hint").textContent="Transcribing…";
+      const b64=await new Promise(res=>{ const r=new FileReader();
+        r.onloadend=()=>res(String(r.result).split(",")[1]); r.readAsDataURL(blob); });
+      try{
+        const r=await (await fetch("/api/transcribe",{method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({audio:b64,mime:blob.type})})).json();
+        mlog("stt "+(r.ok?"ok":"fail")+" "+(r.error||"")+" len="+((r.text||"").length));
+        if(r.ok && r.text){ say(r.text); }
+        else{ $("hint").textContent=r.error||"Didn't catch that — try again."; setTimeout(()=>$("hint").textContent=HINT,4000); }
+      }catch(e){ $("hint").textContent="Transcription failed — type instead."; }
+    };
+    mediaRec.start(); recording=true;
     $("mic").classList.add("on"); orb("listen");
-    $("hint").textContent="Listening… speak after the chime.";
-    try{
-      const r=await (await fetch("/api/listen",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})).json();
-      if(r.ok && r.text){ say(r.text); }
-      else{ $("hint").textContent=r.error||"Didn't catch that — try again."; setTimeout(()=>$("hint").textContent=HINT,4000); }
-    }catch(e){ $("hint").textContent="Mic error — type instead."; }
-    $("mic").classList.remove("on"); orb("pulse");
-  });
+    $("hint").textContent="Listening… tap the mic again when you're done.";
+  }
+  function stopRec(){
+    recording=false; $("mic").classList.remove("on"); orb("pulse");
+    if(mediaRec && mediaRec.state!=="inactive") mediaRec.stop();
+  }
+  $("mic").addEventListener("click",()=>{ if(busy)return; recording?stopRec():startRec(); });
 }
 </script>
 </body>

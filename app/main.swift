@@ -48,9 +48,19 @@ final class DragBar: NSView {
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate {
     var window: NSWindow!
     var web: WKWebView!
+
+    // grant the page's getUserMedia (mic) request. The OS-level TCC prompt still
+    // gates real access, attributed to this app via NSMicrophoneUsageDescription.
+    func webView(_ webView: WKWebView,
+                 requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo,
+                 type: WKMediaCaptureType,
+                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        decisionHandler(.grant)
+    }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         if !serverUp() {
@@ -62,6 +72,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         cfg.defaultWebpagePreferences.allowsContentJavaScript = true
         web = WKWebView(frame: .zero, configuration: cfg)
         web.navigationDelegate = self
+        web.uiDelegate = self                            // enables the mic-permission grant
         web.setValue(false, forKey: "drawsBackground")   // let the page own the background
 
         window = NSWindow(

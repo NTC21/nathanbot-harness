@@ -28,6 +28,11 @@ ui-app/dist/
 __pycache__/
 *.pyc
 
+# python virtualenvs — never commit (the voice stack builds one locally, ~240MB)
+.venv/
+**/.venv/
+venv/
+
 # local config with real identities/projects — ship only *.example.json
 config/accounts.json
 config/paths.json

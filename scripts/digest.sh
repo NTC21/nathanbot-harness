@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# digest.sh — turn Nathan's daily Obsidian notes (+ recent session notes) into system
+# digest.sh — turn the owner's daily Obsidian notes (+ recent session notes) into system
 # state: file action items as tasks, capture durable facts to the wiki. Runs nightly.
 # It NEVER edits or deletes his notes — read-only on the journal, write-only to the system.
 #
@@ -20,21 +20,21 @@ if [ "${1:-}" = "--show" ]; then
   exit 0
 fi
 # NO early-exit on missing daily notes: chat/voice conversation is mined regardless,
-# otherwise everything Nathan says to the operator evaporates unless he journals.
+# otherwise everything the owner says to the operator evaporates unless he journals.
 command -v claude >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
 
 printf "${B}Digesting %d daily note(s) + conversation...${X}\n" "${#notes[@]}"
 list=""; for n in "${notes[@]}"; do list+="- $n"$'\n'; done
 [ -z "$list" ] && list="(no daily notes today — mine the chat history and recent session notes only)"
 
-NB_FEEDBACK_SRC=digest "$R/bin/claudew" -p "You are nathanbot processing Nathan's daily journal notes into system state.
+NB_FEEDBACK_SRC=digest "$R/bin/claudew" -p "You are nathanbot processing the owner's daily journal notes into system state.
 
 READ these daily notes (read-only — never edit or delete them):
 $list
 Also skim the newest dated note in $R/workspace*/memory/ and the recent operator chat
 $R/tasks/.chat.json for anything unrecorded.
 
-Nathan's context: $R/shared-memory/OVERVIEW.md, $R/wiki/pages/nathan.md.
+the owner's context: $R/shared-memory/OVERVIEW.md, $R/wiki/pages/owner.md.
 
 Do THREE things:
 1. ACTION ITEMS — anything implying a task ('need to', 'todo', 'follow up', unchecked

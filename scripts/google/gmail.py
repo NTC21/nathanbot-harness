@@ -36,7 +36,7 @@ def require(path, what):
                  f"   {what}\n   Change that file if this should be allowed.")
     sys.exit(f"\n⛔ PERMISSION REQUIRED — '{path}' is set to ASK.\n"
              f"   {what}\n"
-             f"   Nathan must approve this explicitly. To allow it permanently, set\n"
+             f"   the owner must approve this explicitly. To allow it permanently, set\n"
              f"   \"{path}\" -> level: \"always\" in config/permissions.json")
 
 
@@ -116,10 +116,10 @@ def cmd_draft(a):
 
 def cmd_send(a):
     # HARD FUSE: the chat/voice operator can never send — --yes is a restatement the
-    # model could mint itself. Sending is Nathan's act, from his own shell.
+    # model could mint itself. Sending is the owner's act, from his own shell.
     if os.environ.get("NB_OPERATOR"):
         sys.exit("\n❌ REFUSED — sending email is disabled for the operator.\n"
-                 "   The draft is ready; Nathan sends it himself:  nb mail --account "
+                 "   The draft is ready; the owner sends it himself:  nb mail --account "
                  f"{a.account} send {a.id} --yes {a.account}")
     if permission("email.send") == "never":
         require("email.send", "Sending is disabled in config/permissions.json.")
@@ -157,7 +157,7 @@ if __name__ == "__main__":
     s1 = sub.add_parser("search"); s1.add_argument("query"); s1.add_argument("--limit", type=int, default=10)
     s2 = sub.add_parser("read"); s2.add_argument("id")
     s2.add_argument("--approved", action="store_true",
-                    help="Nathan explicitly approved reading this body in the conversation")
+                    help="the owner explicitly approved reading this body in the conversation")
     s3 = sub.add_parser("draft")
     s3.add_argument("--to", required=True); s3.add_argument("--subject", required=True); s3.add_argument("--body", required=True)
     s4 = sub.add_parser("send"); s4.add_argument("id"); s4.add_argument("--yes", required=True, help="must restate the account key")

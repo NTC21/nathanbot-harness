@@ -94,10 +94,10 @@ def cmd_agenda(a):
 
 def cmd_create(a):
     attendees = [x.strip() for x in (a.attendees or "").split(",") if x.strip()]
-    # HARD FUSE: outward-facing calendar actions are Nathan's, never the operator's
+    # HARD FUSE: outward-facing calendar actions are the owner's, never the operator's
     if attendees and os.environ.get("NB_OPERATOR"):
         sys.exit("REFUSED — inviting attendees sends invitations; disabled for the operator.\n"
-                 "Nathan runs it himself from a terminal.")
+                 "the owner runs it himself from a terminal.")
     if attendees and a.yes != a.account:
         sys.exit("Creating an event WITH attendees sends invitations (outward-facing).\n"
                  f"Re-run with:  --yes {a.account}")

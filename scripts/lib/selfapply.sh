@@ -2,12 +2,12 @@
 # selfapply.sh — shared guardrails for nathanbot's self-modifying passes
 # (evolve --apply, learn --apply). Source this, then:
 #
-#   sa_begin                          # snapshot what was ALREADY dirty (Nathan's work)
+#   sa_begin                          # snapshot what was ALREADY dirty (the owner's work)
 #   ... run the AI pass ...
 #   sa_commit '<allow-regex>' "<msg>" # keep allowlisted NEW changes, revert the rest
 #
 # Properties:
-# - No clean-tree requirement: Nathan's pre-existing edits are never touched, never
+# - No clean-tree requirement: the owner's pre-existing edits are never touched, never
 #   committed, never reverted. Only files the PASS newly changed are considered.
 # - Violations (new changes outside the allowlist) are reverted file-by-file.
 # - Staged content is scanned for secret-looking strings before committing; any hit
@@ -22,7 +22,7 @@ sa_begin() {
   SA_PRE="$(git -C "$R" status --porcelain -uall | sed 's/^...//')"
 }
 
-_sa_was_dirty() {  # was this path dirty before the pass? (Nathan's — hands off)
+_sa_was_dirty() {  # was this path dirty before the pass? (the owner's — hands off)
   printf '%s\n' "$SA_PRE" | grep -qxF "$1"
 }
 

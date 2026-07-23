@@ -17,3 +17,7 @@ _(add a page per recurring collaborator/contact)_
 
 ## Decisions
 _(durable choices worth remembering, with the why)_
+
+## Reference
+- [[conventions]] — rules every harness obeys (coding standards, behavioral preferences).
+- [[task-style]] — how generated tasks are written.

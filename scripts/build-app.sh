@@ -56,7 +56,27 @@ cat > "$APP/Contents/Info.plist" <<PL
  <key>CFBundlePackageType</key><string>APPL</string>
  <key>LSMinimumSystemVersion</key><string>12.0</string>
  <key>NSHighResolutionCapable</key><true/>
+ <key>NSMicrophoneUsageDescription</key><string>nathanbot listens for your voice commands so you can talk to it hands-free.</string>
 </dict></plist>
 PL
+# ── sign the bundle so macOS binds the Info.plist + honors mic access ────────
+# swiftc emits a linker-signed adhoc Mach-O that leaves Info.plist UNBOUND, so
+# macOS never reads NSMicrophoneUsageDescription and never prompts for the mic.
+# Re-signing the whole .app seals the bundle and attaches the audio-input
+# entitlement, which is what makes getUserMedia in the WKWebView actually work.
+cat > /tmp/nb.entitlements <<'ENT'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>com.apple.security.device.audio-input</key><true/>
+</dict></plist>
+ENT
+echo "• signing bundle (adhoc, with mic entitlement)…"
+codesign --force --sign - --identifier com.nathanbot.app \
+         --entitlements /tmp/nb.entitlements --timestamp=none "$APP"
+codesign -dv --entitlements - "$APP" 2>&1 | grep -qi audio-input \
+  && echo "  ✓ audio-input entitlement bound" || echo "  ⚠ entitlement not detected"
+
 touch "$APP"   # bump LaunchServices
 echo "✓ installed: $APP"
+echo "  Quit nathanbot fully and reopen it, then allow the mic when macOS asks."
