@@ -65,6 +65,59 @@ def _strip_ansi(s):
     return re.sub(r"\x1b\[[0-9;]*m", "", s or "")
 
 
+# ── operator-drafts-then-the owner-approves email send ──────────────────────────
+# The operator can NEVER send (gmail.py is NB_OPERATOR-fused, and the operator
+# has no POST-capable tool). It only STAGES: it emits a [[SEND_DRAFT]] marker,
+# the server reads the draft's REAL recipient/subject server-side, and the UI
+# shows an approval card. Only the owner's browser click (POST, which the operator
+# cannot make) fires the actual send. Tokens are single-use and expire fast.
+_SEND_TOKENS = {}          # token -> (draft_id, account, expiry_epoch)
+_SEND_ACCOUNT = "personal"  # only authorized sending identity
+_SEND_MARKER = re.compile(r"\[\[\s*SEND_DRAFT(?:\s+to=([^\]\s]+))?\s*\]\]", re.I)
+
+
+def _gmail(account, *args, timeout=30, drop_operator=False):
+    env = dict(NB_ENV)
+    if drop_operator:
+        env.pop("NB_OPERATOR", None)   # the owner-approved action, not the operator's
+    r = subprocess.run(["python3", str(R/"scripts"/"google"/"gmail.py"),
+                        "--account", account, *args],
+                       capture_output=True, text=True, timeout=timeout, env=env)
+    return r.returncode, _strip_ansi(r.stdout).strip(), _strip_ansi(r.stderr).strip()
+
+
+def _prepare_send(to_hint=None):
+    """Read the newest draft (optionally matching a recipient) and mint a one-use
+    approval token. Returns the dict the UI card renders — TRUE values, read here,
+    not whatever the model asserted."""
+    import secrets
+    rc, out, err = _gmail(_SEND_ACCOUNT, "drafts", "--limit", "10")
+    if rc != 0:
+        return {"ok": False, "error": err or "could not list drafts"}
+    try:
+        drafts = json.loads(out or "[]")
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "could not parse drafts"}
+    pick = None
+    for d in drafts:                                   # drafts() returns newest first
+        if to_hint:
+            if to_hint.lower() in (d.get("to") or "").lower():
+                pick = d
+                break
+        else:
+            pick = d
+            break
+    if not pick:
+        return {"ok": False, "error": f"no draft found to {to_hint}" if to_hint else "no drafts"}
+    if not (pick.get("to") or "").strip():
+        return {"ok": False, "error": "that draft has no recipient set — can't send it"}
+    token = secrets.token_urlsafe(24)
+    _SEND_TOKENS[token] = (pick["draft_id"], pick["account"], time.time() + 300)
+    return {"ok": True, "token": token, "draft_id": pick["draft_id"],
+            "to": pick["to"], "subject": pick.get("subject", ""),
+            "account": pick["account"], "from": pick.get("from", "")}
+
+
 def _load_json(path, default):
     """Defensive read — a missing/corrupt config degrades one section, not the whole UI."""
     try:
@@ -559,9 +612,44 @@ class H(http.server.SimpleHTTPRequestHandler):
                 return self._json({"ok": True, "isError": True,
                                    "reply": "Something went wrong reaching Claude — not saved.",
                                    "error": _strip_ansi(r.stderr).strip()[:800]})
+            # did the operator stage a send? strip the marker, read the real draft,
+            # and hand the UI an approval card. The operator cannot send — only the
+            # card's [Approve & Send] click (a POST it can't make) does.
+            send_request = None
+            mk = _SEND_MARKER.search(out)
+            if mk:
+                out = _SEND_MARKER.sub("", out).strip()
+                prep = _prepare_send(mk.group(1))
+                send_request = prep if prep.get("ok") else None
+                if not prep.get("ok"):
+                    out = (out + f"\n\n(Couldn't stage the send: {prep.get('error')})").strip()
             hist += [{"role": "nathan", "text": msg}, {"role": "nathanbot", "text": out}]
             chat_save(hist)
-            return self._json({"ok": True, "reply": out})
+            resp = {"ok": True, "reply": out}
+            if send_request:
+                resp["send_request"] = send_request
+            return self._json(resp)
+
+        if path == "/api/mail/prepare":
+            # the owner's browser asks to stage a send. POST-only, so the operator
+            # (no POST tool) can never reach this. Returns TRUE recipient + a token.
+            return self._json(_prepare_send(body.get("to")))
+
+        if path == "/api/mail/send":
+            # the actual send — fires ONLY on the owner's click, with a valid one-use
+            # token. Runs gmail.py WITHOUT NB_OPERATOR (his approved act, not the model's).
+            token = body.get("token", "")
+            entry = _SEND_TOKENS.pop(token, None)
+            if not entry:
+                return self._json({"ok": False, "error": "expired or invalid approval — re-open the draft"}, 400)
+            draft_id, account, expiry = entry
+            if time.time() > expiry:
+                return self._json({"ok": False, "error": "approval expired — re-open the draft"}, 400)
+            rc, out, err = _gmail(account, "send", draft_id, "--yes", account,
+                                  timeout=30, drop_operator=True)
+            if rc != 0:
+                return self._json({"ok": False, "error": (err or out or "send failed")[:300]})
+            return self._json({"ok": True, "sent": True})
 
         if path == "/api/chat/clear":
             chat_save([])

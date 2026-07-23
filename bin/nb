@@ -242,6 +242,41 @@ cmd_next() {
   return 0
 }
 
+cmd_plan_day() {
+  # Time-block today: take the top-N ready tasks and propose 90-min calendar
+  # blocks against your free slots. --commit writes them (interactive confirm,
+  # never for the operator). The daily-plan step of the Productivity OS.
+  local commit=0; [ "${1:-}" = "--commit" ] && commit=1
+  local args=() n=0 max="${NB_PLAN_N:-3}"
+  for p in 1 2 3 4 5; do
+    for f in "$OPEN"/*.md; do
+      [ -e "$f" ] || continue
+      [ "$(_fm "$f" priority)" = "$p" ] || continue
+      [ "$(_fm "$f" status)" = "ready" ] || continue
+      args+=(--task "$(_fm "$f" title | sed 's/^"//;s/"$//')")
+      n=$((n+1)); [ "$n" -ge "$max" ] && break 2
+    done
+  done
+  if [ "$n" -eq 0 ]; then
+    printf "${c_d}nothing ready to block — 'nb triage' or 'nb add' first${c_0}\n"; return 0
+  fi
+  python3 "$R/scripts/google/gcalendar.py" planday "${args[@]}"
+  if [ "$commit" -eq 1 ]; then
+    [ -n "${NB_OPERATOR:-}" ] && die "nb plan-day --commit is disabled for the operator (calendar writes are the owner's call)"
+    if [ -t 0 ] && [ -t 1 ]; then
+      printf "\n${c_y}Write these blocks to your calendar? [y/N]${c_0} > "
+      local a; read -r a </dev/tty
+      [ "$a" = y ] || { printf "  skipped.\n"; return 0; }
+      python3 "$R/scripts/google/gcalendar.py" planday "${args[@]}" --commit
+    else
+      printf "  ${c_d}(non-interactive — re-run 'nb plan-day --commit' in a terminal to write)${c_0}\n"
+    fi
+  else
+    printf "${c_d}  → 'nb plan-day --commit' to put these on your calendar${c_0}\n"
+  fi
+  return 0
+}
+
 cmd_status() {
   local ready=0 blocked=0 decide=0 running=0 done_n=0
   for f in "$OPEN"/*.md; do
@@ -824,6 +859,7 @@ case "${1:-}" in
   next)   cmd_next ;;
   status) cmd_status ;;
   plan)   shift; cmd_plan "$@" ;;
+  plan-day|planday|day) shift; cmd_plan_day "$@" ;;
   run)    shift; cmd_run "$@" ;;
   done)   shift; cmd_done "$@" ;;
   decide) shift; cmd_decide "$@" ;;
@@ -849,6 +885,7 @@ case "${1:-}" in
   jarvis)   shift; python3 "$R/scripts/voice/jarvis.py" "$@" ;;
   speak|say) shift; "$R/scripts/speak.sh" "$@" ;;
   deliver)   shift; "$R/scripts/deliver.sh" "$@" ;;
+  telegram|tg) shift; python3 "$R/scripts/telegram/listen.py" "$@" ;;
   study)    shift; "$R/scripts/study.sh" "$@" ;;
   wiki)     shift; "$R/scripts/wiki.sh" "$@" ;;
   today)    open "obsidian://daily" 2>/dev/null || open -a Obsidian 2>/dev/null || die "Obsidian not found" ;;

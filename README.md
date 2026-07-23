@@ -1,50 +1,57 @@
 # nathanbot — a personal Jarvis you actually own
 
-A local-first personal AI system: one shared brain (plain markdown, synced with git),
-one CLI, a JARVIS-style dashboard, a British voice, and scheduled autonomy — built on
-top of whatever coding agent you already use (Claude Code, Codex, Cursor, ...).
+A local-first personal AI you **text and talk to from your phone**. One shared brain (plain
+markdown, synced with git), one CLI, a British voice, and scheduled autonomy — built on top of
+whatever coding agent you already use (Claude Code, Codex, Cursor, ...).
 
-Tell it things in plain English. It files tasks, briefs you every morning out loud,
-watches your calendar and repos in the background, learns from your corrections, and
-keeps working on a local model when your AI subscription hits its usage cap.
+Text it in plain English or send a voice note. It files tasks, briefs you every morning, watches
+your calendar and repos, pings you *before* meetings, learns from your corrections, and keeps
+working on a local model when your AI subscription hits its usage cap.
 
 ```
-you ──▶ chat / voice / menu bar / CLI
+📱 you  ── text / voice note (Telegram) · CLI · morning brief
               │
+              ▼
+   Telegram bridge ──────────  long-polls (survives laptop sleep, 24h queue)
+              │  only answers YOUR chat id
               ▼
         the operator          headless agent call (claude -p via bin/claudew)
         ─ reads your memory   falls back to a local Ollama model when capped
-        ─ acts with nb
+        ─ acts with nb        outward actions are code-fused (approve to send)
               │
               ▼
    markdown brain (git)       tasks/ · wiki/ · workspaces/ · config/
               │
               ▼
-   dashboard + voice          JARVIS HUD on localhost:7777 · speak.sh voice chain
+   it reaches back  ──────────  replies (text + spoken voice note) · proactive nudges
 ```
+
+There's no dashboard to open. The interface is your pocket — it comes to you.
 
 ## What it does day-to-day
 
-- **07:30 brief** — spoken + notification: what's waiting on you, what's ready, today's
-  first calendar event. Optionally delivered to Discord/iMessage.
-- **Capture anywhere** — menu-bar click, global hotkey, `nb add "thought"`, or just tell
-  the chat. AI triages everything into readable tasks; you never write frontmatter.
-- **Ambient watcher** — every 30 min: imminent meetings (spoken warning), dirty repos,
-  VIP email senders.
-- **Nightly digest** — mines your daily notes + chat into tasks and durable wiki facts.
-- **Weekly self-improvement** — `evolve` proposes system upgrades, `learn` updates its
-  model of *you* from your explicit feedback, within hard guardrails (allowlisted paths,
-  secret scans, local-only commits).
-- **JARVIS HUD** — dark cyan dashboard (Dock app or browser): task queue, decisions
-  waiting on you with approve/defer/drop, calendar, system health, live activity log,
-  and a chat that talks back out loud. Click the orb (or press Esc) to hush it.
+- **Two-way on Telegram** — text your bot anything ("what's ready", "add: call the accountant",
+  "draft an email to X"). It acts and replies. Send a **voice note** → it transcribes, thinks,
+  and replies with a **spoken voice note** in a British voice. Hands-free, from anywhere.
+- **Proactive reach-out** — it messages *you* first: a heads-up before calendar events, the
+  morning brief, anything waiting on you. You don't check it; it checks in.
+- **07:30 brief** — what's waiting, what's ready, today's first event — pushed to your phone
+  (and spoken locally).
+- **Time-blocking** — `nb plan-day` turns your top ready tasks into calendar blocks around your
+  real events; approve to write them.
+- **Capture anywhere** — `nb add "thought"`, a text, or a voice note. AI triages everything into
+  readable tasks; you never write frontmatter.
+- **Ambient watcher + nightly digest + weekly self-improvement** — imminent meetings, dirty
+  repos, VIP email; mines your notes into tasks/wiki; `evolve`/`learn` improve the system within
+  hard guardrails (allowlisted paths, secret scans, local-only commits).
 
 ## Requirements
 
-- **macOS** (Apple Silicon or Intel) — the full experience. See [Windows](#windows) below.
-- A coding agent CLI on your PATH (built against **Claude Code**; anything with a
-  `claude -p`-style headless mode can be swapped in via one wrapper).
-- Python 3 (ships with macOS), Homebrew for the optional extras.
+- **macOS** (Apple Silicon or Intel) for the full ambient layer. The phone bridge + CLI are
+  portable — see [Windows](#windows).
+- A coding-agent CLI on your PATH (built against **Claude Code**; anything with a `claude -p`
+  headless mode swaps in via one wrapper).
+- Python 3 (ships with macOS), Homebrew for optional extras.
 
 Nothing here needs a paid API key. Every voice and fallback tier has a free path.
 
@@ -60,96 +67,100 @@ $EDITOR config/projects.json config/permissions.json shared-memory/OVERVIEW.md
 # 2. put nb on your PATH
 echo "export PATH=\"$PWD/bin:\$PATH\"" >> ~/.zshrc && source ~/.zshrc
 
-# 3. dashboard (python stdlib — no npm, no build step)
-python3 ui/server.py &          # then open http://127.0.0.1:7777
-bash scripts/build-app.sh       # optional: native Dock app wrapper
+# 3. the headless brain/API (python stdlib — no npm, no build step)
+python3 ui/server.py &          # the CLI + phone bridge talk to this on :7777
 
-# 4. make it ambient (launchd: brief, digest, watcher, weekly learning)
+# 4. your phone = the interface (Telegram, two-way + voice). See docs/telegram.md
+#    - create a bot via @BotFather, save the token:
+mkdir -p ~/.secrets/telegram && chmod 700 ~/.secrets/telegram
+printf '%s' '<BOTFATHER_TOKEN>' > ~/.secrets/telegram/bot_token && chmod 600 ~/.secrets/telegram/bot_token
+nb tg --whoami                  # message your bot -> it prints your chat id to save
+
+# 5. make it ambient (launchd: brief, digest, watcher, phone bridge, proactive nudges)
 nb schedule install
+nb schedule install-telegram    # always-on two-way phone bridge
+nb schedule install-nudge       # proactive calendar heads-ups
 
-# 5. voice (free, no account): British neural voice via Microsoft edge-tts
+# 6. voice (free, no account): British neural voice via Microsoft edge-tts
 brew install pipx && pipx install edge-tts && pipx ensurepath
 nb speak "Good evening. All systems online."
 
-# 6. never run out of AI (optional, ~5GB): local fallback model
+# 7. never run out of AI (optional, ~5GB): local fallback model
 bash scripts/setup-fallback.sh install
 ```
 
-Say hello: open the dashboard and type, or `nb brief --speak`.
+Say hello: text your bot, or `nb brief --speak`.
 
 ## The pieces
 
 | Piece | What it is |
 |---|---|
-| `bin/nb` | The CLI. `nb add`, `nb brief`, `nb next`, `nb decide`, `nb remember`, `nb watch`, ... `nb help` lists everything. |
+| `bin/nb` | The CLI. `nb add`, `nb brief`, `nb next`, `nb plan-day`, `nb decide`, `nb remember`, `nb tg`, ... `nb help` lists everything. |
 | `bin/claudew` | Wrapper around your agent CLI. Detects "usage limit reached" and transparently retries the same call against a local Ollama model (`/v1/messages` on :11434). |
-| `ui/` | `server.py` (stdlib HTTP + JSON API on :7777) and `web/index.html` (the HUD — one file, no build step). |
-| `app/` | Tiny Swift WKWebView wrapper so the HUD lives in your Dock. |
+| `scripts/telegram/listen.py` | The two-way phone bridge — long-polls Telegram, routes your texts/voice notes to the operator, replies (text + spoken voice note). Only answers your chat id. |
+| `scripts/proactive/nudge.py` | Pings you before calendar events. Runs every 10 min, dedups. |
+| `ui/server.py` | The **headless brain/API** (stdlib HTTP + JSON on :7777). The CLI, the phone bridge, and voice all hit the same operator here. No dashboard — this is backend only. |
 | `scripts/speak.sh` | Voice chain: Fish Audio → edge-tts → Voicebox → ElevenLabs → OpenAI → `say`. First available backend wins; every reply is sanitized to sound human. |
-| `scripts/schedule.sh` | Installs/removes all launchd jobs. |
+| `scripts/schedule.sh` | Installs/removes all launchd jobs (brief, digest, watcher, telegram, nudge, ...). |
 | `prompts/operator.md` | The operator's system prompt — the personality and the rules. |
-| `tasks/`, `wiki/`, `workspace-*/` | The markdown brain. Tasks with frontmatter, an Obsidian-compatible knowledge wiki, per-domain memory. |
+| `tasks/`, `wiki/`, `workspace-*/` | The markdown brain. Tasks with frontmatter, an Obsidian-compatible wiki, per-domain memory. |
 
 ## Customizing it (the point of the whole thing)
 
-Everything is a text file. The system is designed to be reshaped:
+Everything is a text file, designed to be reshaped:
 
-- **Your identity & goals** — `shared-memory/OVERVIEW.md` (who you are, ventures, hard
-  rules). Every AI call reads this first.
+- **Your identity & goals** — `shared-memory/OVERVIEW.md` (who you are, ventures, hard rules).
+  Every AI call reads this first.
 - **Personality** — `prompts/operator.md`. Want less butler, more drill sergeant? Edit it.
 - **Voice** — env vars, no code: `NB_EDGE_VOICE` (any [edge-tts voice](https://github.com/rany2/edge-tts)),
-  `NB_FISH_VOICE` (any fish.audio library voice id), `NB_VOICEBOX_PROFILE`, `NB_SPEAK_MAX`
-  (spoken-length cap). Reorder/remove tiers by editing `scripts/speak.sh` top-down.
-- **What it may do without asking** — `config/permissions.json` (email read/draft/send,
-  calendar, git push, purchases...), enforced in code, adjustable with `nb perms set`.
-- **Autonomy per project** — `config/projects.json`: `auto-merge`, `auto-pr`, or
-  `review-required` per repo. The task engine cannot override it.
-- **Schedules** — times live in one place, `scripts/schedule.sh`; rerun
-  `nb schedule install` after editing.
-- **Local fallback model** — `NB_OLLAMA_MODEL` (default picked by your RAM: qwen3:8b
-  under 32GB, qwen3:14b above).
-- **Different agent CLI** — point `NB_CLAUDE_BIN` at any binary with a compatible
-  headless mode; `bin/claudew` is the only place the agent is invoked.
-- **Task style** — `wiki/pages/task-style.md` controls how every generated task is
-  written (the "never make me ask what is this" rule).
+  `NB_FISH_VOICE`, `NB_VOICEBOX_PROFILE`, `NB_SPEAK_MAX`. Reorder tiers in `scripts/speak.sh`.
+- **Proactive window** — `NB_NUDGE_MIN` (how many minutes before an event it pings you).
+- **What it may do without asking** — `config/permissions.json` (email, calendar, git, ...),
+  enforced in code, adjustable with `nb perms set`.
+- **Autonomy per project** — `config/projects.json`: `auto-merge`, `auto-pr`, `review-required`.
+- **Schedules** — `scripts/schedule.sh`; rerun `nb schedule install` after editing.
+- **Local fallback model** — `NB_OLLAMA_MODEL` (RAM-based default: qwen3:8b under 32GB, else qwen3:14b).
+- **Different agent CLI** — point `NB_CLAUDE_BIN` at any binary with a headless mode; `bin/claudew`
+  is the only place the agent is invoked.
+- **Task style** — `wiki/pages/task-style.md` controls how every generated task is written.
 
 ## Security model
 
-- **Secrets never enter the repo.** Keys live in `~/.secrets/` (mode 700), read at call
-  time, passed via stdin — never argv, never committed. Release/self-improvement passes
-  run a secret-pattern scan and revert on any hit.
-- **The operator is fused.** The chat/voice agent runs with `NB_OPERATOR=1`: it cannot
-  send email, create calendar invites, push, merge, or trigger the task engine — those
-  paths hard-refuse in code, not in the prompt. It's also denied all reads of `~/.secrets`.
-- **Self-modification is sandboxed.** Weekly `evolve`/`learn` passes may only touch
-  allowlisted paths, never your uncommitted work, and commit locally so `git revert` is
-  always one command away.
+- **Secrets never enter the repo.** Keys live in `~/.secrets/` (mode 700), read at call time,
+  passed via stdin — never argv, never committed. Release/self-improvement passes secret-scan and
+  revert on any hit.
+- **The operator is fused.** The chat/voice agent runs with `NB_OPERATOR=1`: it cannot send email,
+  create calendar invites, push, merge, or trigger the task engine — those paths hard-refuse in
+  code, not in the prompt. It's also denied all reads of `~/.secrets`.
+- **Sending email needs your tap.** The operator can only *stage* a send; you approve the real
+  recipient with an **Approve** button in Telegram (or from a terminal) — an action the model
+  itself cannot perform.
+- **The phone bridge answers only you.** Messages from any chat id other than yours are ignored.
+- **Self-modification is sandboxed.** Weekly `evolve`/`learn` may only touch allowlisted paths,
+  never your uncommitted work, and commit locally so `git revert` is one command away.
 
 ## Windows
 
-The brain is portable; the ambient layer is macOS-native today.
+The brain, the CLI, and the **phone bridge** are portable; the ambient scheduling is macOS-native.
 
 | Works on Windows (via **WSL**) | macOS-only today |
 |---|---|
-| `nb` CLI, tasks, wiki, triage, digest | menu-bar HUD (SwiftBar), Dock app |
-| dashboard (`python3 ui/server.py`, open in any browser) | launchd schedules (use `cron` in WSL instead) |
-| `claudew` + Ollama fallback ([Ollama runs on Windows](https://ollama.com)) | voice output chain (`afplay`/`say`; swap in any CLI player) |
-| Google mail/calendar scripts | global hotkeys (skhd) |
+| `nb` CLI, tasks, wiki, triage, digest | launchd schedules (use `cron`/Task Scheduler in WSL) |
+| **Telegram bridge + voice** (`nb tg`) — your phone works anywhere | local voice playback (`afplay`/`say`; swap any CLI player) |
+| `claudew` + Ollama fallback ([Ollama on Windows](https://ollama.com)) | menu-bar + global hotkeys (SwiftBar/skhd) |
+| Google mail/calendar scripts | |
 
-Practical Windows setup: install WSL2 + Ubuntu, follow the Quick start inside WSL
-(skip steps 3's Dock app, 4, and 5), run the dashboard and open it from Windows at
-`http://127.0.0.1:7777`, and schedule `nb brief`/`nb digest` with cron. Contributions
-that port the ambient layer are welcome.
+Practical Windows setup: install WSL2 + Ubuntu, follow Quick start inside WSL (schedule
+`nb brief`/`nb telegram`/`nb nudge` with cron instead of launchd). The Telegram interface is the
+same everywhere — that's the point.
 
 ## Philosophy
 
 - **Plain files over databases** — everything greppable, diffable, yours.
-- **One brain, many harnesses** — `AGENTS.md` is the contract; Claude Code, Codex,
-  Cursor and friends all read the same memory.
-- **Autonomy inside fuses** — the system acts on its own, but destructive and outward
-  actions are code-gated, not vibes-gated.
-- **$0 by default** — every capability has a free tier: local models, free neural TTS,
-  no required API keys.
+- **One brain, many harnesses** — `AGENTS.md` is the contract; Claude Code, Codex, Cursor read the same memory.
+- **It comes to you** — a phone you text, not a dashboard you open. Autonomy means reaching out.
+- **Autonomy inside fuses** — it acts on its own, but destructive and outward actions are code-gated.
+- **$0 by default** — local models, free neural TTS, no required API keys.
 
 ## License
 

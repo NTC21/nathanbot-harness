@@ -32,16 +32,21 @@ nb brief                              # the daily briefing, on demand
 `nb help` is the full list. You never need most commands — capture and decide are the
 two you'll actually use; everything else runs on the schedule.
 
-## 3. Dashboard + Dock app
+## 3. Your phone is the interface (Telegram, two-way + voice)
 
 ```bash
-python3 ui/server.py &        # stdlib only — no npm, no build
-open http://127.0.0.1:7777
-bash scripts/build-app.sh     # optional: installs ~/Applications/nathanbot.app
+python3 ui/server.py &        # the headless brain/API on :7777 — stdlib, no npm, no build
+
+# create a bot via @BotFather, then:
+mkdir -p ~/.secrets/telegram && chmod 700 ~/.secrets/telegram
+printf '%s' '<BOTFATHER_TOKEN>' > ~/.secrets/telegram/bot_token && chmod 600 ~/.secrets/telegram/bot_token
+nb tg --whoami                # message your bot -> it prints your chat id to save
+nb schedule install-telegram  # always-on two-way bridge
 ```
 
-Chat in the middle; your queue, decisions, calendar, system health, and activity log
-around it. Click the orb or press Esc to stop it talking.
+Now text your bot from anywhere — "what's ready", "add: call the accountant" — or send a
+**voice note** and it replies with a spoken one. Email sends arrive as Approve/Cancel buttons.
+Full walkthrough: `docs/telegram.md`. There's no dashboard to open — it comes to you.
 
 ## 4. Voice ($0, no account)
 
@@ -69,14 +74,15 @@ Remove everything just as easily: `nb schedule remove`.
 
 - **Google mail/calendar** — `nb mail login <account-key>` walks the OAuth flow per
   account; reading is safe-by-default, sending always requires your explicit yes.
-- **Discord/iMessage delivery** — webhook URL in `~/.secrets/discord/webhook_url`
-  and/or `NB_IMESSAGE_TO`; the 07:30 brief fans out to them.
+- **Telegram (recommended) / Discord / iMessage delivery** — Telegram is two-way (see
+  section 3); Discord via a webhook URL in `~/.secrets/discord/webhook_url`, iMessage via
+  `NB_IMESSAGE_TO`. The 07:30 brief + proactive nudges fan out to whatever's configured.
 - **Hands-free "Jarvis" wake word** — needs a free Picovoice key in
   `~/.secrets/picovoice/access_key`, then `nb jarvis once` (grants mic) and
   `nb schedule install-jarvis`.
 - **Never-run-out fallback** — `bash scripts/setup-fallback.sh install` (Ollama +
   a local model sized to your RAM). When your subscription caps, `bin/claudew`
-  silently reroutes calls to it; the HUD shows "LOCAL BRAIN" while it's covering.
+  silently reroutes calls to it; a `claude-fallback` telemetry event marks when it's covering.
 
 ## Where things live
 

@@ -142,6 +142,23 @@ def cmd_send(a):
     print("  ✅ sent")
 
 
+def cmd_drafts(a):
+    # list recent drafts as JSON — id + real recipient/subject read server-side.
+    # Metadata only (no bodies), so always allowed. Feeds the UI approval card so
+    # the owner sees the TRUE recipient, not whatever the model claimed.
+    import json
+    s, addr = svc(a.account)
+    out = []
+    for d in s.users().drafts().list(userId="me", maxResults=a.limit).execute().get("drafts", []):
+        m = s.users().messages().get(userId="me", id=d["message"]["id"], format="metadata",
+                                     metadataHeaders=["To", "Subject", "Date"]).execute()
+        h = headers(m["payload"])
+        out.append({"draft_id": d["id"], "to": h.get("to", ""),
+                    "subject": h.get("subject", ""), "date": h.get("date", ""),
+                    "account": a.account, "from": addr})
+    print(json.dumps(out))
+
+
 def cmd_labels(a):
     # listing labels is metadata, always fine
     s, _ = svc(a.account)
@@ -161,8 +178,9 @@ if __name__ == "__main__":
     s3 = sub.add_parser("draft")
     s3.add_argument("--to", required=True); s3.add_argument("--subject", required=True); s3.add_argument("--body", required=True)
     s4 = sub.add_parser("send"); s4.add_argument("id"); s4.add_argument("--yes", required=True, help="must restate the account key")
+    s5 = sub.add_parser("drafts"); s5.add_argument("--limit", type=int, default=10)
     sub.add_parser("labels")
 
     a = p.parse_args()
     {"search": cmd_search, "read": cmd_read, "draft": cmd_draft,
-     "send": cmd_send, "labels": cmd_labels}[a.cmd](a)
+     "send": cmd_send, "drafts": cmd_drafts, "labels": cmd_labels}[a.cmd](a)

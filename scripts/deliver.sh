@@ -36,3 +36,14 @@ if [ -f "$SEC/discord/webhook_url" ]; then
 $body")
   curl -sf -X POST "$url" -H "Content-Type: application/json" -d "$payload" >/dev/null 2>&1 || true
 fi
+
+# 4. Telegram (opt-in) — the two-way phone channel; replies handled by telegram/listen.py
+if [ -f "$SEC/telegram/bot_token" ] && [ -f "$SEC/telegram/chat_id" ]; then
+  tok=$(tr -d '[:space:]' < "$SEC/telegram/bot_token")
+  cid=$(tr -d '[:space:]' < "$SEC/telegram/chat_id")
+  curl -sf "https://api.telegram.org/bot${tok}/sendMessage" \
+    --data-urlencode "chat_id=${cid}" \
+    --data-urlencode "text=${title}
+${body}" \
+    -d "disable_web_page_preview=true" >/dev/null 2>&1 || true
+fi

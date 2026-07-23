@@ -127,6 +127,51 @@ EOF
     launchctl load "$LA/$PREFIX.jarvis.plist" 2>/dev/null && echo "  installed: jarvis (hands-free wake word)"
     echo "  If it can't hear you: grant Microphone to the daemon, or use the push-to-talk hotkey."
     ;;
+  install-telegram)
+    # The two-way phone channel. Long-polls Telegram (KeepAlive), routes your texts
+    # to the operator, texts replies back. Needs ~/.secrets/telegram/{bot_token,chat_id}.
+    [ -f "$HOME/.secrets/telegram/bot_token" ] || { echo "no ~/.secrets/telegram/bot_token — create a bot via @BotFather first"; exit 1; }
+    [ -f "$HOME/.secrets/telegram/chat_id" ]   || { echo "no ~/.secrets/telegram/chat_id — run: nb tg --whoami"; exit 1; }
+    cat > "$LA/$PREFIX.telegram.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$PREFIX.telegram</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>-lc</string><string>$NB telegram</string></array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>$R/tasks/logs/telegram.log</string>
+  <key>StandardErrorPath</key><string>$R/tasks/logs/telegram.err</string>
+</dict>
+</plist>
+EOF
+    launchctl unload "$LA/$PREFIX.telegram.plist" 2>/dev/null || true
+    launchctl load "$LA/$PREFIX.telegram.plist" 2>/dev/null && echo "  installed: telegram (two-way phone bridge)"
+    ;;
+  install-nudge)
+    # Proactive calendar heads-ups. Runs every 10 min; nudge.py dedups + is silent
+    # when nothing's imminent, so a frequent interval is cheap.
+    cat > "$LA/$PREFIX.nudge.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$PREFIX.nudge</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>-lc</string><string>python3 $R/scripts/proactive/nudge.py</string></array>
+  <key>StartInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>$R/tasks/logs/nudge.log</string>
+  <key>StandardErrorPath</key><string>$R/tasks/logs/nudge.err</string>
+</dict>
+</plist>
+EOF
+    launchctl unload "$LA/$PREFIX.nudge.plist" 2>/dev/null || true
+    launchctl load "$LA/$PREFIX.nudge.plist" 2>/dev/null && echo "  installed: nudge (proactive calendar heads-ups every 10m)"
+    ;;
   install-voicebox)
     # Run Voicebox's bundled backend HEADLESS (no GUI needed for TTS). We drop the
     # --parent-pid the GUI passes, so the server keeps running on its own.
@@ -162,12 +207,12 @@ EOF
     echo "  Quit the Voicebox GUI if it's open (it would fight for the port)."
     ;;
   remove)
-    for n in brief digest sync watch tidy evolve scout groom learn jarvis voicebox ccr; do
+    for n in brief digest sync watch tidy evolve scout groom learn jarvis voicebox telegram nudge ccr; do
       p="$LA/$PREFIX.$n.plist"
       # || true: under set -e a plist that exists but isn't loaded must not abort the loop
       [ -e "$p" ] && { launchctl unload "$p" 2>/dev/null || true; }
       rm -f "$p" && echo "  removed: $n"
     done
     ;;
-  *) echo "usage: nb schedule [install|install-jarvis|install-voicebox|status|remove]"; exit 1 ;;
+  *) echo "usage: nb schedule [install|install-jarvis|install-voicebox|install-telegram|install-nudge|status|remove]"; exit 1 ;;
 esac
