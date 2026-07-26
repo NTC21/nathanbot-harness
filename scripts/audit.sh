@@ -106,4 +106,14 @@ wikiprobs=$(python3 scripts/wiki_index.py --lint 2>/dev/null | grep -c ':' || ec
 [ "$wikiprobs" = 0 ] && ok "wiki clean (schema, links, index in sync)" \
   || bad "$wikiprobs wiki problem(s) — run 'nb wiki lint'"
 
+hdr "Memory vs reality (staleness)"
+# Structure checks above prove the wiring; this proves the CLAIMS still hold.
+# Confidently-wrong memory is worse than missing memory — a later session acts on it.
+staleout=$(python3 "$R/scripts/stale.py" --quiet 2>/dev/null)
+if [ -z "$staleout" ]; then ok "no stale references — memory matches reality"
+else
+  n=$(printf '%s\n' "$staleout" | grep -cE '^\s{4}\S+:[0-9]+')
+  bad "$n stale reference(s) — run 'nb stale' for detail"
+fi
+
 printf "\n\033[1m%s warning(s)\033[0m\n" "$warn"

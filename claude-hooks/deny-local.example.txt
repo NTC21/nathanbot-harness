@@ -1,0 +1,22 @@
+# deny-local.txt — extra paths this machine must never let an agent read or write.
+#
+# Copy to deny-local.txt next to the installed hooks. NOT tracked by git, and
+# that is the point: a vault's NAME is itself information. A shared or public
+# copy of this guard should not enumerate one owner's directory layout, or the
+# names of the businesses whose keys they hold.
+#
+# One path per line. ~ is expanded. Everything after # is a comment.
+# These join the read+write deny tier, same as ~/.ssh.
+#
+# Worth adding if you have them (use YOUR names, not these):
+#   - a personal key vault outside ~/.secrets
+#   - a directory of raw access tokens
+#   - 2FA recovery codes  <- the worst one to lose; they survive a password reset
+#   - per-client or per-business credential directories
+#   - password-manager exports, wallet seed backups
+#   - tax, medical, or legal document folders
+
+# ~/my-key-vault
+# ~/tokens
+# ~/2fa-backups
+# ~/.acme-corp-keys

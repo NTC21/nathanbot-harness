@@ -94,18 +94,36 @@ def cmd_agenda(a):
 
 def cmd_create(a):
     attendees = [x.strip() for x in (a.attendees or "").split(",") if x.strip()]
-    # HARD FUSE: outward-facing calendar actions are the owner's, never the operator's
-    if attendees and os.environ.get("NB_OPERATOR"):
-        sys.exit("REFUSED — inviting attendees sends invitations; disabled for the operator.\n"
-                 "the owner runs it himself from a terminal.")
+    # HARD FUSE: writing the calendar is the owner's, never the operator's — even a self-block
+    # with no attendees. The operator only STAGES a block via the [[CAL_BLOCK]] marker; the
+    # server commits it WITHOUT NB_OPERATOR after the owner taps Approve. (Inviting attendees is
+    # additionally outward-facing.) This closes the gap where an attendee-less create wasn't fused.
+    if os.environ.get("NB_OPERATOR"):
+        sys.exit("REFUSED — creating calendar events is disabled for the operator.\n"
+                 "Stage it as a [[CAL_BLOCK]] marker; the owner taps Approve to commit.")
     if attendees and a.yes != a.account:
         sys.exit("Creating an event WITH attendees sends invitations (outward-facing).\n"
                  f"Re-run with:  --yes {a.account}")
     service, _email = svc(a.account)
     tz = local_tz()
+    # Google wants full RFC3339 (with seconds); "2026-07-27T08:00" is rejected 400.
+    # Normalize so both manual creates and the Approve-tap block commits (which store
+    # HH:MM) are accepted. Preserves any offset if the caller supplied one.
+    def _rfc3339(s):
+        try:
+            return datetime.fromisoformat(s.strip()).isoformat()
+        except (ValueError, AttributeError):
+            return s
     body = {"summary": a.title,
-            "start": {"dateTime": a.start, "timeZone": tz},
-            "end": {"dateTime": a.end, "timeZone": tz}}
+            "start": {"dateTime": _rfc3339(a.start), "timeZone": tz},
+            "end": {"dateTime": _rfc3339(a.end), "timeZone": tz}}
+    # optional weekly recurrence — --byday MO,WE,FR (builds a weekly RRULE) or raw --rrule
+    rrule = a.rrule
+    if a.byday:
+        days = ",".join(d.strip().upper()[:2] for d in a.byday.split(",") if d.strip())
+        rrule = f"FREQ=WEEKLY;BYDAY={days}"
+    if rrule:
+        body["recurrence"] = ["RRULE:" + rrule.replace("RRULE:", "")]
     if attendees:
         body["attendees"] = [{"email": x} for x in attendees]
     ev = service.events().insert(
@@ -136,17 +154,33 @@ def cmd_respond(a):
 
 
 # ── time-blocking: turn today's ready tasks into calendar blocks ─────────────
+def _planning_cfg():
+    """Planning defaults from config/planning.json. Read from disk so EVERY context
+    (brief, operator subprocess, interactive) sees the same window with no env plumbing.
+    Env vars still override per-invocation."""
+    import json
+    try:
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+        with open(os.path.join(root, "config", "planning.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
 def _work_window():
-    """(now, work_start, work_end, tzinfo) — all timezone-aware, today, local."""
+    """(now, work_start, work_end, tzinfo) — all timezone-aware, today, local.
+    Precedence: env var > config/planning.json > hardcoded default."""
     from zoneinfo import ZoneInfo
     tz = ZoneInfo(local_tz())
     now = datetime.now(tz)
+    cfg = _planning_cfg()
 
     def at(hhmm):
         h, m = (int(x) for x in hhmm.split(":"))
         return now.replace(hour=h, minute=m, second=0, microsecond=0)
-    return now, at(os.environ.get("NB_WORK_START", "09:00")), \
-        at(os.environ.get("NB_WORK_END", "18:00")), tz
+    ws = os.environ.get("NB_WORK_START") or cfg.get("work_start") or "09:00"
+    we = os.environ.get("NB_WORK_END") or cfg.get("work_end") or "18:00"
+    return now, at(ws), at(we), tz
 
 
 def _busy_today(tz):
@@ -191,7 +225,7 @@ def _free_slots(start_from, work_end, busy, block_min):
 
 def cmd_planday(a):
     now, ws, we, tz = _work_window()
-    block = a.block or int(os.environ.get("NB_BLOCK_MIN", "90"))
+    block = a.block or int(os.environ.get("NB_BLOCK_MIN") or _planning_cfg().get("block_min") or 90)
     start_from = max(ws, now + timedelta(minutes=5))
     busy = _busy_today(tz)
     slots = _free_slots(start_from, we, busy, block)
@@ -230,6 +264,44 @@ def cmd_planday(a):
             print(f"    ✓ {s.strftime('%H:%M')}  {t}")
 
 
+def _free_gaps(start_from, work_end, busy):
+    """Contiguous free spans in [start_from, work_end] not covered by busy, each
+    >= 30 min (shorter gaps aren't worth surfacing)."""
+    spans = sorted((s, e) for s, e, *_ in busy if e > start_from and s < work_end)
+    gaps, cur = [], start_from
+    for s, e in spans:
+        s, e = max(s, start_from), min(e, work_end)
+        if s > cur:
+            gaps.append((cur, s))
+        cur = max(cur, e)
+    if cur < work_end:
+        gaps.append((cur, work_end))
+    return [(s, e) for s, e in gaps if (e - s) >= timedelta(minutes=30)]
+
+
+def _hrs(h):
+    return f"{h:.0f}" if abs(h - round(h)) < 0.1 else f"{h:.1f}"
+
+
+def cmd_today(a):
+    """Tight day summary for the brief. Line 1 is a speakable sentence; the rest
+    is the booked events + free gaps for the Telegram/text push."""
+    now, ws, we, tz = _work_window()
+    start_from = max(ws, now)
+    busy = _busy_today(tz)
+    gaps = _free_gaps(start_from, we, busy)
+    free_h = sum((e - s).total_seconds() for s, e in gaps) / 3600
+    n = len(busy)
+    line1 = f"{n} event{'' if n == 1 else 's'} today"
+    if gaps:
+        line1 += f" and {_hrs(free_h)} hours free"
+    print(line1 + ".")
+    for s, e, title, k in busy:
+        print(f"  {s.strftime('%H:%M')}–{e.strftime('%H:%M')}  {title}")
+    if gaps:
+        print("Free: " + " · ".join(f"{s.strftime('%H:%M')}–{e.strftime('%H:%M')}" for s, e in gaps))
+
+
 def main():
     ap = argparse.ArgumentParser(description="nathanbot calendar")
     ap.add_argument("--account", help="account key; omit only for 'agenda --all'")
@@ -240,6 +312,8 @@ def main():
     p = sub.add_parser("create")
     p.add_argument("--title", required=True); p.add_argument("--start", required=True)
     p.add_argument("--end", required=True); p.add_argument("--attendees"); p.add_argument("--yes")
+    p.add_argument("--byday", help="weekly recurrence days, e.g. MO,WE,FR")
+    p.add_argument("--rrule", help="raw RRULE body, e.g. FREQ=WEEKLY;BYDAY=TU,TH")
     p = sub.add_parser("respond")
     p.add_argument("id"); p.add_argument("--status", required=True, choices=["accepted", "declined", "tentative"])
     p.add_argument("--yes", required=True, help="must restate the account key")
@@ -247,18 +321,20 @@ def main():
     p.add_argument("--task", action="append", help="repeatable; a task title to time-block")
     p.add_argument("--block", type=int, help="block length in minutes (default 90)")
     p.add_argument("--commit", action="store_true", help="actually write the blocks to the calendar")
+    sub.add_parser("today")  # day summary (events + free gaps) across all accounts
     a = ap.parse_args()
 
     if a.cmd == "agenda":
         if not a.all and not a.account:
             sys.exit("agenda needs --account or --all")
-    elif a.cmd == "planday":
+    elif a.cmd in ("planday", "today"):
         pass  # account optional; reads all calendars, writes to personal by default
     elif not a.account:
         sys.exit("--account required")
 
     {"list": cmd_list, "search": cmd_search, "agenda": cmd_agenda,
-     "create": cmd_create, "respond": cmd_respond, "planday": cmd_planday}[a.cmd](a)
+     "create": cmd_create, "respond": cmd_respond, "planday": cmd_planday,
+     "today": cmd_today}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -73,7 +73,7 @@ if T:
     c = collections.Counter(t.get("cmd") for t in T)
     print("  used:", ", ".join(f"{k}={v}" for k, v in c.most_common()))
     allcmds = {"add","triage","next","status","plan","run","done","decide","brief",
-               "evolve","scout","tidy","audit","groom","discuss","mail","project","ui"}
+               "evolve","scout","tidy","audit","groom","discuss","mail","project","server"}
     unused = sorted(allcmds - set(c))
     print("  NEVER used:", ", ".join(unused) or "none")
 

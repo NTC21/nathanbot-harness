@@ -35,7 +35,7 @@ two you'll actually use; everything else runs on the schedule.
 ## 3. Your phone is the interface (Telegram, two-way + voice)
 
 ```bash
-python3 ui/server.py &        # the headless brain/API on :7777 — stdlib, no npm, no build
+python3 server/server.py &        # the headless brain/API on :7777 — stdlib, no npm, no build
 
 # create a bot via @BotFather, then:
 mkdir -p ~/.secrets/telegram && chmod 700 ~/.secrets/telegram

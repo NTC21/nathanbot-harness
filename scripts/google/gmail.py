@@ -7,8 +7,11 @@
   gmail.py --account <k> send <draft-id> --yes <account-key>
   gmail.py --account <k> labels
 """
-import argparse, base64, os, sys, pathlib
+import argparse, base64, mimetypes, os, sys, pathlib
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import auth  # noqa: E402
@@ -104,7 +107,23 @@ def cmd_read(a):
 
 def cmd_draft(a):
     s, addr = svc(a.account)
-    m = MIMEText(a.body)
+    attachments = a.attach or []
+    if attachments:
+        m = MIMEMultipart()
+        m.attach(MIMEText(a.body))
+        for path in attachments:
+            p = pathlib.Path(path).expanduser().resolve()
+            if not p.is_file():
+                sys.exit(f"attachment not found: {p}")
+            ctype, _ = mimetypes.guess_type(str(p))
+            maintype, subtype = (ctype.split("/", 1) if ctype else ("application", "octet-stream"))
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(p.read_bytes())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f'attachment; filename="{p.name}"')
+            m.attach(part)
+    else:
+        m = MIMEText(a.body)
     m["to"], m["from"], m["subject"] = a.to, addr, a.subject
     raw = base64.urlsafe_b64encode(m.as_bytes()).decode()
     d = s.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
@@ -177,6 +196,7 @@ if __name__ == "__main__":
                     help="the owner explicitly approved reading this body in the conversation")
     s3 = sub.add_parser("draft")
     s3.add_argument("--to", required=True); s3.add_argument("--subject", required=True); s3.add_argument("--body", required=True)
+    s3.add_argument("--attach", action="append", help="path to file to attach, repeatable")
     s4 = sub.add_parser("send"); s4.add_argument("id"); s4.add_argument("--yes", required=True, help="must restate the account key")
     s5 = sub.add_parser("drafts"); s5.add_argument("--limit", type=int, default=10)
     sub.add_parser("labels")

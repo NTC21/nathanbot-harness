@@ -5,7 +5,7 @@
 
 Pipeline (all on-device): Porcupine "Jarvis" wake word -> record (energy VAD) ->
 faster-whisper STT -> the nathanbot operator (claude -p, NB_OPERATOR=1, scoped tools) ->
-speak.sh TTS. Reuses ui/server.py's operator pattern and the shared prompt loader.
+speak.sh TTS. Reuses server/server.py's operator pattern and the shared prompt loader.
 
   nb jarvis start [--wake-test]   foreground wake-word loop (what launchd runs)
   nb jarvis once                  one turn, no wake word (also triggers the mic grant)
@@ -53,7 +53,7 @@ from prompt import build_operator_prompt  # noqa: E402
 CONVO = deque(maxlen=6)
 
 
-# ── claude / env resolution (mirrors ui/server.py:13-34) ──────────────────────
+# ── claude / env resolution (mirrors server/server.py:13-34) ──────────────────────
 def _which_claude():
     import shutil
     for c in (shutil.which("claude"),

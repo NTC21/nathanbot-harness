@@ -5,8 +5,7 @@ markdown, synced with git), one CLI, a British voice, and scheduled autonomy —
 whatever coding agent you already use (Claude Code, Codex, Cursor, ...).
 
 Text it in plain English or send a voice note. It files tasks, briefs you every morning, watches
-your calendar and repos, pings you *before* meetings, learns from your corrections, and keeps
-working on a local model when your AI subscription hits its usage cap.
+your calendar and repos, pings you *before* meetings, and learns from your corrections.
 
 ```
 📱 you  ── text / voice note (Telegram) · CLI · morning brief
@@ -16,7 +15,7 @@ working on a local model when your AI subscription hits its usage cap.
               │  only answers YOUR chat id
               ▼
         the operator          headless agent call (claude -p via bin/claudew)
-        ─ reads your memory   falls back to a local Ollama model when capped
+        ─ reads your memory   a usage cap fails loudly, never silently degrades
         ─ acts with nb        outward actions are code-fused (approve to send)
               │
               ▼
@@ -53,7 +52,7 @@ There's no dashboard to open. The interface is your pocket — it comes to you.
   headless mode swaps in via one wrapper).
 - Python 3 (ships with macOS), Homebrew for optional extras.
 
-Nothing here needs a paid API key. Every voice and fallback tier has a free path.
+Nothing here needs a paid API key beyond the coding agent you already use. Voice is free.
 
 ## Quick start (macOS)
 
@@ -68,7 +67,7 @@ $EDITOR config/projects.json config/permissions.json shared-memory/OVERVIEW.md
 echo "export PATH=\"$PWD/bin:\$PATH\"" >> ~/.zshrc && source ~/.zshrc
 
 # 3. the headless brain/API (python stdlib — no npm, no build step)
-python3 ui/server.py &          # the CLI + phone bridge talk to this on :7777
+python3 server/server.py &          # the CLI + phone bridge talk to this on :7777
 
 # 4. your phone = the interface (Telegram, two-way + voice). See docs/telegram.md
 #    - create a bot via @BotFather, save the token:
@@ -84,9 +83,6 @@ nb schedule install-nudge       # proactive calendar heads-ups
 # 6. voice (free, no account): British neural voice via Microsoft edge-tts
 brew install pipx && pipx install edge-tts && pipx ensurepath
 nb speak "Good evening. All systems online."
-
-# 7. never run out of AI (optional, ~5GB): local fallback model
-bash scripts/setup-fallback.sh install
 ```
 
 Say hello: text your bot, or `nb brief --speak`.
@@ -96,10 +92,10 @@ Say hello: text your bot, or `nb brief --speak`.
 | Piece | What it is |
 |---|---|
 | `bin/nb` | The CLI. `nb add`, `nb brief`, `nb next`, `nb plan-day`, `nb decide`, `nb remember`, `nb tg`, ... `nb help` lists everything. |
-| `bin/claudew` | Wrapper around your agent CLI. Detects "usage limit reached" and transparently retries the same call against a local Ollama model (`/v1/messages` on :11434). |
+| `bin/claudew` | Wrapper around your agent CLI — the single place the agent is invoked. Detects "usage limit reached" and fails loudly, so a cap is never mistaken for a broken system. |
 | `scripts/telegram/listen.py` | The two-way phone bridge — long-polls Telegram, routes your texts/voice notes to the operator, replies (text + spoken voice note). Only answers your chat id. |
 | `scripts/proactive/nudge.py` | Pings you before calendar events. Runs every 10 min, dedups. |
-| `ui/server.py` | The **headless brain/API** (stdlib HTTP + JSON on :7777). The CLI, the phone bridge, and voice all hit the same operator here. No dashboard — this is backend only. |
+| `server/server.py` | The **headless brain/API** (stdlib HTTP + JSON on :7777). The CLI, the phone bridge, and voice all hit the same operator here. No dashboard — this is backend only. |
 | `scripts/speak.sh` | Voice chain: Fish Audio → edge-tts → Voicebox → ElevenLabs → OpenAI → `say`. First available backend wins; every reply is sanitized to sound human. |
 | `scripts/schedule.sh` | Installs/removes all launchd jobs (brief, digest, watcher, telegram, nudge, ...). |
 | `prompts/operator.md` | The operator's system prompt — the personality and the rules. |
@@ -119,7 +115,6 @@ Everything is a text file, designed to be reshaped:
   enforced in code, adjustable with `nb perms set`.
 - **Autonomy per project** — `config/projects.json`: `auto-merge`, `auto-pr`, `review-required`.
 - **Schedules** — `scripts/schedule.sh`; rerun `nb schedule install` after editing.
-- **Local fallback model** — `NB_OLLAMA_MODEL` (RAM-based default: qwen3:8b under 32GB, else qwen3:14b).
 - **Different agent CLI** — point `NB_CLAUDE_BIN` at any binary with a headless mode; `bin/claudew`
   is the only place the agent is invoked.
 - **Task style** — `wiki/pages/task-style.md` controls how every generated task is written.
@@ -147,7 +142,7 @@ The brain, the CLI, and the **phone bridge** are portable; the ambient schedulin
 |---|---|
 | `nb` CLI, tasks, wiki, triage, digest | launchd schedules (use `cron`/Task Scheduler in WSL) |
 | **Telegram bridge + voice** (`nb tg`) — your phone works anywhere | local voice playback (`afplay`/`say`; swap any CLI player) |
-| `claudew` + Ollama fallback ([Ollama on Windows](https://ollama.com)) | menu-bar + global hotkeys (SwiftBar/skhd) |
+| `claudew` agent wrapper | menu-bar + global hotkeys (SwiftBar/skhd) |
 | Google mail/calendar scripts | |
 
 Practical Windows setup: install WSL2 + Ubuntu, follow Quick start inside WSL (schedule
@@ -160,7 +155,7 @@ same everywhere — that's the point.
 - **One brain, many harnesses** — `AGENTS.md` is the contract; Claude Code, Codex, Cursor read the same memory.
 - **It comes to you** — a phone you text, not a dashboard you open. Autonomy means reaching out.
 - **Autonomy inside fuses** — it acts on its own, but destructive and outward actions are code-gated.
-- **$0 by default** — local models, free neural TTS, no required API keys.
+- **$0 on top** — free neural TTS, no API keys beyond the coding agent you already pay for.
 
 ## License
 

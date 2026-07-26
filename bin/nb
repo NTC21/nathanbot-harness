@@ -32,8 +32,9 @@
 #   nb tidy [--apply]      machine maintenance: caches, dormant deps, uncommitted work
 #
 #   nb audit               self-heal check on the memory system
+#   nb stale               find memory that no longer matches reality
 #   nb new <name> [--type] scaffold a new project
-#   nb ui                  open the local dashboard (http://127.0.0.1:7777)
+#   nb server              start/check the headless API (http://127.0.0.1:7777)
 #   nb sync                commit + push nathanbot
 #   nb schedule install    make it ambient (launchd: brief daily, evolve+tidy weekly)
 #   nb profile <cmd>       capability layers per project (list|show|apply|sync|check)
@@ -87,9 +88,10 @@ cmd_add() {
   [ $# -gt 0 ] || die "usage: nb add \"your idea\""
   printf -- '- [ ] %s  <!-- %s -->\n' "$*" "$(date +%Y-%m-%d)" >> "$INBOX"
   printf "${c_g}captured${c_0}\n"
-  # auto-file it into a real task in the background — no manual triage step.
-  # Opt out with NB_NO_AUTOTRIAGE=1. Needs claude on PATH.
-  if [ -z "${NB_NO_AUTOTRIAGE:-}" ] && command -v claude >/dev/null 2>&1; then
+  # TASKS PAUSED: captures stay in the inbox; nothing auto-becomes a task.
+  # Re-enable the task system by setting NB_TASKS_ON=1 (and restoring the operator
+  # + digest/scout jobs). Opt out separately with NB_NO_AUTOTRIAGE=1.
+  if [ -n "${NB_TASKS_ON:-}" ] && [ -z "${NB_NO_AUTOTRIAGE:-}" ] && command -v claude >/dev/null 2>&1; then
     ( _autotriage ) >/dev/null 2>&1 &
   fi
   return 0
@@ -148,7 +150,7 @@ id: t-NNNN
 title: <clear actionable title>
 domain: coding|content|research|language|ops
 project: <a key from config/projects.json, or "none">
-status: ready|blocked|needs-decision
+status: proposed|blocked|needs-decision
 priority: 1..5   (1 = do first)
 autonomy: inherit
 created: $(date +%Y-%m-%d)
@@ -238,7 +240,10 @@ cmd_next() {
       [ "$found" -ge 8 ] && break 2
     done
   done
-  [ "$found" -eq 0 ] && printf "  ${c_d}nothing ready — 'nb inbox' or 'nb triage'${c_0}\n"
+  [ "$found" -eq 0 ] && printf "  ${c_d}nothing ready — you decide what's ready ('nb review' to see suggestions)${c_0}\n"
+  # proposed = AI suggestions waiting for your yes; kept OUT of ready so they don't distract
+  local prop=0; for f in "$OPEN"/*.md; do [ -e "$f" ] && [ "$(_fm "$f" status)" = "proposed" ] && prop=$((prop+1)); done
+  [ "$prop" -gt 0 ] && printf "  ${c_d}%s suggestion(s) waiting — 'nb review' to promote or drop${c_0}\n" "$prop"
   return 0
 }
 
@@ -277,18 +282,65 @@ cmd_plan_day() {
   return 0
 }
 
+_set_status() {   # $1=file  $2=new status
+  local tmp; tmp=$(mktemp)
+  sed "s/^status:.*/status: $2/" "$1" > "$tmp" && mv "$tmp" "$1"
+}
+
+_find_open() {    # $1=id -> prints the open task file, or nothing
+  local f; f=$(ls "$OPEN/$1-"*.md 2>/dev/null | head -1)
+  [ -z "$f" ] && f=$(grep -rl "^id: $1\$" "$OPEN" 2>/dev/null | head -1)
+  printf '%s' "$f"
+}
+
+cmd_promote() {   # nb ready <id> — YOU greenlight a suggestion into your ready list
+  [ $# -gt 0 ] || die "usage: nb ready <task-id>   (promote a suggestion to your ready list)"
+  local f; f=$(_find_open "$1"); [ -n "$f" ] || die "no open task $1"
+  _set_status "$f" ready
+  printf "${c_g}%s → ready${c_0}  %s\n" "$1" "$(_fm "$f" title | sed 's/^"//;s/"$//')"
+}
+
+cmd_review() {    # AI suggestions ('proposed') waiting on you — promote or drop, your call
+  local list=()
+  for f in "$OPEN"/*.md; do [ -e "$f" ] || continue
+    [ "$(_fm "$f" status)" = "proposed" ] && list+=("$f"); done
+  if [ ${#list[@]} -eq 0 ]; then
+    printf "${c_d}no suggestions — your ready list is entirely yours${c_0}\n"; return 0; fi
+  printf "${c_b}Suggestions${c_0} ${c_d}(not in your ready list until you say so)${c_0}\n"
+  for f in "${list[@]}"; do
+    printf "  ${c_y}?${c_0} %-10s %-14s %s\n" "$(_fm "$f" id)" "[$(_fm "$f" project)]" \
+      "$(_fm "$f" title | sed 's/^"//;s/"$//')"
+  done
+  if [ -t 0 ] && [ -t 1 ]; then
+    printf "\n${c_d}each: [y] make ready · [d] drop · [Enter] skip${c_0}\n"
+    for f in "${list[@]}"; do
+      printf "  %s > " "$(_fm "$f" title | sed 's/^"//;s/"$//' | cut -c1-46)"
+      local a; read -r a </dev/tty
+      case "$a" in
+        y) _set_status "$f" ready; printf "    ${c_g}→ ready${c_0}\n" ;;
+        d) mkdir -p "$R/tasks/done"; mv "$f" "$R/tasks/done/" 2>/dev/null; printf "    ${c_d}dropped${c_0}\n" ;;
+      esac
+    done
+  else
+    printf "\n${c_d}promote: nb ready <id>   ·   drop: nb done <id>${c_0}\n"
+  fi
+  return 0
+}
+
 cmd_status() {
-  local ready=0 blocked=0 decide=0 running=0 done_n=0
+  local ready=0 blocked=0 decide=0 running=0 done_n=0 proposed=0
   for f in "$OPEN"/*.md; do
     [ -e "$f" ] || continue
     case "$(_fm "$f" status)" in
       ready) ready=$((ready+1)) ;; blocked) blocked=$((blocked+1)) ;;
       needs-decision) decide=$((decide+1)) ;; running) running=$((running+1)) ;;
+      proposed) proposed=$((proposed+1)) ;;
     esac
   done
   for f in "$DONE"/*.md; do [ -e "$f" ] && done_n=$((done_n+1)); done
   printf "${c_b}Status${c_0}\n"
-  printf "  ${c_g}ready${c_0}          %s\n" "$ready"
+  printf "  ${c_g}ready${c_0}          %s  ${c_d}(what YOU greenlit)${c_0}\n" "$ready"
+  printf "  ${c_d}proposed${c_0}       %s  ${c_d}(AI suggestions — 'nb review')${c_0}\n" "$proposed"
   printf "  ${c_y}running${c_0}        %s\n" "$running"
   printf "  ${c_y}blocked${c_0}        %s\n" "$blocked"
   printf "  ${c_r}needs decision${c_0} %s\n" "$decide"
@@ -601,16 +653,21 @@ cmd_brief() {
     { [ "$h" -ge 12 ] && [ "$h" -lt 17 ]; } && g="Good afternoon"
     [ "$h" -ge 17 ] && g="Good evening"
     pl=""; [ "$decide" -ne 1 ] && pl="s"
-    if [ "$decide" -gt 0 ]; then s="$g. $decide decision$pl waiting on you, $ready ready to run."
-    elif [ "$ready" -gt 0 ]; then s="$g. Nothing needs you. $ready ready to run."
-    else s="$g. All systems nominal. Nothing waiting."; fi
+    # today's shape across all calendars — line 1 is speakable, full block is for text.
+    # Calendar-first: with the task queue paused, the day is the brief's real payload.
+    local day dayline1
+    day=$(python3 "$R/scripts/google/gcalendar.py" today 2>/dev/null)
+    dayline1=$(printf '%s' "$day" | head -1)
+    s="$g."
+    [ -n "$dayline1" ] && s="$s $dayline1"
+    if [ "$decide" -gt 0 ]; then s="$s $decide decision$pl waiting on you."
+    elif [ "$ready" -gt 0 ]; then s="$s $ready ready to run."
+    elif [ -z "$dayline1" ]; then s="$s All systems nominal. Nothing waiting."; fi
     # detached so the audio survives SwiftBar/launchd killing our process group
     if $speak; then . "$R/scripts/lib/detach.sh"; nb_detach "$R/scripts/speak.sh" "$s"; fi
     if $deliver; then
-      local msg="$s"
-      # today's next event across all calendars (best-effort; silent if cal unset)
-      local nextev; nextev=$(python3 "$R/scripts/google/gcalendar.py" agenda --all --days 1 2>/dev/null | grep -m1 '^  ' | sed 's/^  *//')
-      [ -n "$nextev" ] && msg="$msg"$'\n'"Next: $nextev"
+      local msg="$g."
+      [ -n "$day" ] && msg="$msg"$'\n'"$day"
       if [ "$decide" -gt 0 ]; then
         msg="$msg"$'\n'"Waiting on you:"
         for f in "$OPEN"/*.md; do
@@ -658,6 +715,12 @@ cmd_brief() {
     printf "\n## System health\n"
     local w; w=$("$R/scripts/audit.sh" 2>/dev/null | grep -c '⚠️' | head -1); w=${w:-0}
     [ "$w" -eq 0 ] && printf -- "- audit clean\n" || printf -- "- **%s audit warning(s)** — run \`nb audit\`\n" "$w"
+    # Called out separately rather than folded into the audit count: stale memory
+    # is the one warning type that makes nathanbot actively work against the owner,
+    # and the pre-commit hook cannot see drift that originates outside this repo
+    # (a file deleted elsewhere, a tool uninstalled). This is that second net.
+    local st; st=$(python3 "$R/scripts/stale.py" --quiet 2>/dev/null | grep -cE '^\s{4}\S+:[0-9]+')
+    [ "${st:-0}" -gt 0 ] && printf -- "- **%s stale memory reference(s)** — run \`nb stale\`; a session will act on these\n" "$st"
     local free; free=$(df -h / | tail -1 | awk '{print $4}')
     printf -- "- disk free: %s\n" "$free"
   } > "$out"
@@ -694,7 +757,7 @@ YOU MAY EDIT ONLY THESE:
 - $R/tasks/open/*.md                                      (fix a typo'd title / obvious mislabel ONLY)
 
 ABSOLUTE BOUNDS — never, for any reason:
-- Do NOT touch code ($R/bin, $R/scripts, $R/ui), config ($R/config/*.json), capabilities,
+- Do NOT touch code ($R/bin, $R/scripts, $R/server), config ($R/config/*.json), capabilities,
   $R/AGENTS.md, anything under ~/.secrets, or ANY path outside $R.
 - Do NOT change autonomy/permissions/identities or anything security-relevant.
 - Do NOT delete files. Small, high-confidence, reversible edits only.
@@ -857,6 +920,8 @@ case "${1:-}" in
   inbox)  cmd_inbox ;;
   triage) cmd_triage ;;
   next)   cmd_next ;;
+  review|suggestions) cmd_review ;;
+  ready|ok|greenlight) shift; cmd_promote "$@" ;;
   status) cmd_status ;;
   plan)   shift; cmd_plan "$@" ;;
   plan-day|planday|day) shift; cmd_plan_day "$@" ;;
@@ -864,6 +929,7 @@ case "${1:-}" in
   done)   shift; cmd_done "$@" ;;
   decide) shift; cmd_decide "$@" ;;
   audit)  cmd_audit ;;
+  stale)  shift; python3 "$R/scripts/stale.py" "$@" ;;
   brief)  shift; cmd_brief "$@" ;;
   evolve) shift; cmd_evolve "$@" ;;
   scout)  cmd_scout ;;
@@ -886,21 +952,22 @@ case "${1:-}" in
   speak|say) shift; "$R/scripts/speak.sh" "$@" ;;
   deliver)   shift; "$R/scripts/deliver.sh" "$@" ;;
   telegram|tg) shift; python3 "$R/scripts/telegram/listen.py" "$@" ;;
+  activity|ship|shipped) shift; python3 "$R/scripts/proactive/repo-activity.py" --report "$@" ;;
+  news) shift; "$R/scripts/news.sh" "$@" ;;
   study)    shift; "$R/scripts/study.sh" "$@" ;;
   wiki)     shift; "$R/scripts/wiki.sh" "$@" ;;
   today)    open "obsidian://daily" 2>/dev/null || open -a Obsidian 2>/dev/null || die "Obsidian not found" ;;
   digest)   shift; "$R/scripts/digest.sh" "$@" ;;
   groom)    shift; "$R/scripts/groom.sh" "$@" ;;
-  build-app) shift; "$R/scripts/build-app.sh" ;;
-  ui|open)  shift
-            # start the server first if it's down, THEN open the app (never a dead tab)
-            if ! curl -s -o /dev/null --max-time 1 http://127.0.0.1:7777/ 2>/dev/null; then
-              launchctl kickstart "gui/$(id -u)/com.nathanbot.ui" 2>/dev/null \
-                || (nohup python3 "$R/ui/server.py" >/dev/null 2>&1 &)
-              sleep 1
-            fi
-            open -a nathanbot 2>/dev/null || open "$HOME/Applications/nathanbot.app" 2>/dev/null \
-              || open http://127.0.0.1:7777 ;;
+  server|api|ui) shift
+            # headless brain/API — no dashboard anymore; the phone (Telegram) talks to this.
+            if curl -s -o /dev/null --max-time 1 http://127.0.0.1:7777/api/state 2>/dev/null; then
+              echo "nathanbot API up: http://127.0.0.1:7777"
+            else
+              launchctl kickstart "gui/$(id -u)/com.nathanbot.server" 2>/dev/null \
+                || (nohup python3 "$R/server/server.py" >/dev/null 2>&1 &)
+              sleep 1; echo "started nathanbot API on :7777"
+            fi ;;
   mail)     shift
             case "${1:-status}" in
               login|status|verify) python3 "$R/scripts/google/auth.py" "$@" ;;

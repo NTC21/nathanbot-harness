@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """nathanbot Telegram bridge — the two-way phone channel.
 
-You text the bot from anywhere; it routes to the SAME operator the dashboard uses
+You text the bot from anywhere; it routes to the headless API (server/server.py)
 (POST /api/chat, NB_OPERATOR-fused), and texts the reply back. Email-send approvals
 arrive as inline [Approve] / [Cancel] buttons — tapping Approve fires the gated
 send (POST /api/mail/send). Telegram holds messages ~24h server-side, so anything
@@ -19,7 +19,12 @@ import json, os, sys, time, urllib.request, urllib.parse, pathlib
 
 SEC = pathlib.Path(os.path.expanduser("~/.secrets/telegram"))
 STATE = pathlib.Path(__file__).resolve().parents[2] / "tasks" / ".tg-offset"
-UI = os.environ.get("NB_UI_URL", "http://127.0.0.1:7777")
+# NB: this is the nathanbot server, NOT the Telegram Bot API. Keep the names
+# distinct — they were both called API after the ui/->server/ rename, and the
+# Telegram assignment below silently shadowed this one, so every /api/chat POST
+# went to api.telegram.org and came back 404.
+SERVER = (os.environ.get("NB_SERVER_URL") or os.environ.get("NB_UI_URL")  # NB_UI_URL: legacy
+          or "http://127.0.0.1:7777")
 
 
 def _read(name):
@@ -44,9 +49,9 @@ def tg(method, **params):
         return None
 
 
-def ui_post(path, payload, timeout=900):
+def api_post(path, payload, timeout=900):
     try:
-        req = urllib.request.Request(f"{UI}{path}", data=json.dumps(payload).encode(),
+        req = urllib.request.Request(f"{SERVER}{path}", data=json.dumps(payload).encode(),
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
@@ -78,7 +83,7 @@ def transcribe_voice(file_id):
             audio = r.read()
     except Exception:
         return ""
-    res = ui_post("/api/transcribe", {"audio": base64.b64encode(audio).decode(), "mime": "audio/ogg"}, timeout=120)
+    res = api_post("/api/transcribe", {"audio": base64.b64encode(audio).decode(), "mime": "audio/ogg"}, timeout=120)
     return (res.get("text") or "").strip() if res.get("ok") else ""
 
 
@@ -123,6 +128,16 @@ def _log(m):
     print(f"{int(time.time())} {m}", flush=True)
 
 
+def _fmt_block(cr):
+    from datetime import datetime
+    try:
+        s, e = datetime.fromisoformat(cr["start"]), datetime.fromisoformat(cr["end"])
+        when = s.strftime("%a %d %b, %H:%M") + "–" + e.strftime("%H:%M")
+    except Exception:
+        when = f"{cr.get('start')} – {cr.get('end')}"
+    return f"{cr.get('title')}\n{when}"
+
+
 def handle_message(msg):
     # SECURITY: only ever answer the owner's chat id.
     cid = str(msg.get("chat", {}).get("id"))
@@ -146,7 +161,7 @@ def handle_message(msg):
     _log(f"recv{' (voice)' if spoken else ''}: {text[:60]}")
     tg("sendChatAction", chat_id=CHAT_ID, action="typing")
     ack = tg("sendMessage", chat_id=CHAT_ID, text="🤔 on it…")   # instant feedback; edited to the reply
-    r = ui_post("/api/chat", {"text": text})
+    r = api_post("/api/chat", {"text": text})
     reply = (r.get("reply") or "…").strip() if r.get("ok") else \
             f"(couldn't reach the brain: {r.get('error','error')})"
     _log(f"reply ok={r.get('ok')} len={len(reply)} spoken={spoken} send_request={bool(r.get('send_request'))}")
@@ -165,6 +180,11 @@ def handle_message(msg):
              f"From: {sr.get('from') or sr.get('account')}",
              buttons=[[{"text": "✅ Approve & Send", "callback_data": "send:" + sr["token"]},
                        {"text": "✖️ Cancel", "callback_data": "cancel"}]])
+    for cr in (r.get("cal_requests") or []):      # one Approve card per staged block
+        if cr.get("token"):
+            send(f"🗓 Put this on your calendar?\n{_fmt_block(cr)}",
+                 buttons=[[{"text": "✅ Approve", "callback_data": "cal:" + cr["token"]},
+                           {"text": "✖️ Cancel", "callback_data": "cancel"}]])
 
 
 def handle_callback(cb):
@@ -174,13 +194,18 @@ def handle_callback(cb):
     data = cb.get("data", "")
     cbid = cb.get("id")
     if data.startswith("send:"):
-        res = ui_post("/api/mail/send", {"token": data[5:]}, timeout=60)
+        res = api_post("/api/mail/send", {"token": data[5:]}, timeout=60)
         msg = "✅ Sent" if res.get("ok") else f"Not sent — {res.get('error','failed')}"
+        tg("answerCallbackQuery", callback_query_id=cbid, text=msg)
+        send(msg)
+    elif data.startswith("cal:"):
+        res = api_post("/api/cal/commit", {"token": data[4:]}, timeout=60)
+        msg = "✅ On your calendar" if res.get("ok") else f"Not added — {res.get('error','failed')}"
         tg("answerCallbackQuery", callback_query_id=cbid, text=msg)
         send(msg)
     elif data == "cancel":
         tg("answerCallbackQuery", callback_query_id=cbid, text="Cancelled")
-        send("Cancelled — draft kept, not sent.")
+        send("Cancelled — nothing changed.")
 
 
 def _load_offset():

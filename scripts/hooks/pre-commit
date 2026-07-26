@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# nathanbot pre-commit — catch memory drift at the moment it is introduced.
+#
+# Staleness is event-driven, not time-driven: it appears the instant a file is
+# deleted or a rule is overruled, and every session between then and the next
+# scheduled audit acts on the wrong information. A commit is the precise moment
+# internal drift becomes durable, so check here rather than only on a timer.
+#
+# WARNS, never blocks. A false positive that stops the owner committing would get
+# the hook deleted within a week, and a deleted hook catches nothing. The daily
+# brief is the second net for drift that originates outside this repo.
+#
+# Install:  scripts/hooks/install.sh
+R="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -f "$R/scripts/stale.py" ] || exit 0
+
+out=$(python3 "$R/scripts/stale.py" --quiet 2>/dev/null)
+[ -z "$out" ] && exit 0
+
+printf '\n\033[33m⚠ memory drift detected — committing anyway\033[0m\n'
+printf '%s\n' "$out" | sed 's/^/  /'
+printf '  \033[2mFix now, or it ships: a later session reads this and acts on it.\033[0m\n\n'
+exit 0

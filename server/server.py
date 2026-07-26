@@ -41,17 +41,36 @@ NB_ENV = {**os.environ, "PATH": _HARDENED_PATH}
 
 
 def chat_model():
-    """Model for operator chat. NB_CHAT_MODEL env beats config/ui.json.
-    Use alias names (sonnet/opus/haiku) — full model IDs bypass claudew's
-    Ollama-fallback alias remapping and would break the local-brain path."""
+    """Model for operator chat. NB_CHAT_MODEL env beats config/server.json.
+    Alias names (opus/sonnet/haiku) are still preferred over pinned model IDs:
+    an alias tracks the current model, a pinned ID silently goes stale."""
     m = os.environ.get("NB_CHAT_MODEL", "").strip()
     if m:
         return m
     try:
-        return (json.loads((R/"config"/"ui.json").read_text())
+        return (json.loads((R/"config"/"server.json").read_text())
                 .get("chat_model") or "sonnet").strip()
     except Exception:
         return "sonnet"
+
+
+def chat_effort():
+    """Reasoning effort for operator chat, or "" to leave the CLI default alone.
+
+    Validated against the levels the CLI accepts rather than passed through
+    blindly: a bad --effort value makes claude exit non-zero, and every reply
+    becomes "couldn't reach the brain" — the same silent-channel failure the
+    Telegram API/SERVER name collision caused.
+    """
+    LEVELS = {"low", "medium", "high", "xhigh", "max"}
+    e = os.environ.get("NB_CHAT_EFFORT", "").strip()
+    if not e:
+        try:
+            e = (json.loads((R/"config"/"server.json").read_text())
+                 .get("chat_effort") or "").strip()
+        except Exception:
+            e = ""
+    return e if e in LEVELS else ""
 
 
 def nb(*args, timeout=600):
@@ -63,6 +82,62 @@ def nb(*args, timeout=600):
 
 def _strip_ansi(s):
     return re.sub(r"\x1b\[[0-9;]*m", "", s or "")
+
+
+# ── operator tool scope ──────────────────────────────────────────────────────
+# The nb subcommands the operator may run. This is an ALLOWLIST on purpose: the
+# previous Bash({NB}:*) wildcard granted all ~56 verbs, including several that
+# should never have been reachable from an unattended run — `perms set` (it could
+# un-gate itself), `sync` (push), `run` (spawns further sessions with their own
+# tool scope), `server`/`jarvis`/`telegram` (long-lived processes), and
+# `evolve|learn|tidy|groom --apply` (self-modification). A wildcard also silently
+# grants every verb added in the future, which is how those five crept in.
+OPERATOR_NB_VERBS = [
+    # capture + read-only status
+    "add", "inbox", "next", "status", "brief", "watch", "audit",
+    # knowledge in / out — the whole point of the operator
+    "remember", "feedback", "wiki", "study", "news", "activity",
+    # planning + task hygiene (non-destructive forms)
+    "triage", "plan", "done", "decide",
+    # calendar staging — gcalendar.py is separately NB_OPERATOR-fused, so this
+    # can only stage a [[CAL_BLOCK]] marker for the owner to approve
+    "cal",
+]
+# NOT granted, deliberately: "perms" — the pattern Bash(nb perms:*) would also
+# match "nb perms set email.send always", so granting read access to its own
+# permissions also grants the ability to rewrite them. There is no way to split
+# show from set at the flag level, so the whole verb stays out. The operator does
+# not need to introspect its permissions; it needs to obey them.
+
+# Defense in depth. The real path boundary is the PreToolUse guard in
+# ~/.claude/hooks/, which canonicalizes with fcntl(F_GETPATH) so firmlink
+# (/System/Volumes/Data/...) and case-variant spellings cannot slip past. These
+# flags are the second layer, and cover the highest-value targets only.
+def _operator_denied_tools():
+    h = os.path.expanduser("~")
+    # Derive from the guard's own list rather than restating it. Two reasons:
+    # a second hand-maintained copy drifts, and this file is shipped in the
+    # public template — hardcoding a machine's vault directory names here would
+    # publish the layout that claude-hooks/deny-local.txt exists to keep private.
+    # nb_guard loads deny-local.txt itself, so per-machine additions flow through.
+    try:
+        sys.path.insert(0, str(R / "claude-hooks"))
+        from nb_guard import DENY_ALL as roots          # noqa: E402
+    except Exception:
+        roots = [f"{h}/.secrets", f"{h}/.ssh", f"{h}/.aws", f"{h}/.gnupg",
+                 f"{h}/.config/gh", f"{h}/Library/Keychains", f"{h}/Library/Cookies"]
+    out = []
+    for r in roots:
+        for tool in ("Read", "Grep", "Glob", "Edit", "Write"):
+            out.append(f"{tool}({r}/**)")
+    # never let an unattended run rewrite its own rails
+    for p in (f"{h}/.claude/settings.json", f"{h}/.claude/hooks",
+              f"{R}/config/permissions.json", f"{R}/prompts"):
+        out += [f"Edit({p}/**)", f"Write({p}/**)", f"Edit({p})", f"Write({p})"]
+    return out
+
+
+OPERATOR_DENIED_TOOLS = _operator_denied_tools()
 
 
 # ── operator-drafts-then-the owner-approves email send ──────────────────────────
@@ -116,6 +191,63 @@ def _prepare_send(to_hint=None):
     return {"ok": True, "token": token, "draft_id": pick["draft_id"],
             "to": pick["to"], "subject": pick.get("subject", ""),
             "account": pick["account"], "from": pick.get("from", "")}
+
+
+# ── operator-stages-then-the owner-approves calendar block ──────────────────────
+# Exactly the email pattern: gcalendar.py create is NB_OPERATOR-fused (even a
+# self-block), so the operator can only STAGE a block via a [[CAL_BLOCK]] marker.
+# The server validates the times, mints a one-use token, and only the owner's tap
+# (a POST the operator can't make) writes the event — WITHOUT NB_OPERATOR.
+_CAL_TOKENS = {}           # token -> (title, start_iso, end_iso, account, expiry_epoch)
+_CAL_ACCOUNT = "personal"  # blocks land on the personal calendar
+_CAL_MARKER = re.compile(
+    r"\[\[\s*CAL_BLOCK\s+title=(?P<title>[^|\]]+?)\s*\|\s*"
+    r"start=(?P<start>[^|\]\s]+)\s*\|\s*end=(?P<end>[^|\]\s]+)\s*\]\]", re.I)
+
+
+def _gcal(*args, timeout=30, drop_operator=False):
+    env = dict(NB_ENV)
+    if drop_operator:
+        env.pop("NB_OPERATOR", None)   # the owner-approved action, not the operator's
+    r = subprocess.run(["python3", str(R/"scripts"/"google"/"gcalendar.py"), *args],
+                       capture_output=True, text=True, timeout=timeout, env=env)
+    return r.returncode, _strip_ansi(r.stdout).strip(), _strip_ansi(r.stderr).strip()
+
+
+def _prepare_block(title, start, end):
+    """Validate a staged block server-side (times are the model's claim — sanity-check
+    them here) and mint a one-use approval token. Local naive ISO throughout."""
+    import secrets
+    from datetime import datetime, timedelta
+    title = (title or "").strip()[:120]
+    if not title:
+        return {"ok": False, "error": "block needs a title"}
+    try:
+        s = datetime.fromisoformat(start.strip())
+        e = datetime.fromisoformat(end.strip())
+    except (ValueError, TypeError, AttributeError):
+        return {"ok": False, "error": "couldn't read the block times"}
+    # the operator may emit a tz-aware time (trailing Z / offset). Coerce to local
+    # naive so it (a) doesn't TypeError against a naive now, (b) lands at the right
+    # wall-clock — gcalendar.py stamps the machine tz on the naive ISO we store.
+    if s.tzinfo is not None:
+        s = s.astimezone().replace(tzinfo=None)
+    if e.tzinfo is not None:
+        e = e.astimezone().replace(tzinfo=None)
+    if e <= s:
+        return {"ok": False, "error": "end must be after start"}
+    if (e - s) > timedelta(hours=8):
+        return {"ok": False, "error": "block longer than 8h — split it"}
+    now = datetime.now()
+    if s < now - timedelta(minutes=1):
+        return {"ok": False, "error": "that start time is already past"}
+    if s > now + timedelta(days=14):
+        return {"ok": False, "error": "that's over two weeks out — double-check the date"}
+    si, ei = s.isoformat(timespec="minutes"), e.isoformat(timespec="minutes")
+    token = secrets.token_urlsafe(24)
+    _CAL_TOKENS[token] = (title, si, ei, _CAL_ACCOUNT, time.time() + 300)
+    return {"ok": True, "token": token, "title": title,
+            "start": si, "end": ei, "account": _CAL_ACCOUNT}
 
 
 def _load_json(path, default):
@@ -276,7 +408,6 @@ def _systems():
     return {
         "jobs": jobs,
         "voicebox": _port_up(17493),
-        "ollama": _port_up(int(os.environ.get("NB_OLLAMA_PORT", "11434"))),
         "claude": "capped" if capped else "ok",
         "checked": int(time.time()),
     }
@@ -376,7 +507,9 @@ def route_say(text):
 
 class H(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
-        super().__init__(*a, directory=str(R/"ui"/"web"), **k)
+        # headless: the dashboard was retired. Static serving is disabled in do_GET;
+        # this directory is just a harmless placeholder for the base class.
+        super().__init__(*a, directory=str(R/"server"), **k)
 
     def end_headers(self):
         # never let WKWebView (Dock app) or a browser cache the UI — otherwise a
@@ -429,11 +562,14 @@ class H(http.server.SimpleHTTPRequestHandler):
                 except Exception:
                     pass
                 return self._json({"ok": True})
-            # SPA: unknown non-asset paths fall back to index.html
-            p = urllib.parse.urlparse(self.path).path
-            if p != "/" and not (R/"ui"/"web"/p.lstrip("/")).exists():
-                self.path = "/"
-            return super().do_GET()
+            # headless API — the dashboard was retired; talk to nathanbot on Telegram.
+            body = b"nathanbot headless API - talk to me on Telegram."
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         except Exception as e:                      # noqa: BLE001 — never hang the browser
             try:
                 return self._json({"ok": False, "error": str(e)[:300]}, 500)
@@ -584,25 +720,31 @@ class H(http.server.SimpleHTTPRequestHandler):
             # The operator ingests untrusted content (email/web), so the secrets vault is
             # hard-denied — a prompt injection can't read keys to exfiltrate via WebFetch.
             home = os.path.expanduser("~")
-            # claudew wraps CLAUDE_BIN: same CLI, but auto-falls back to the
-            # local Ollama brain when subscription usage caps
+            # claudew wraps CLAUDE_BIN: same CLI, argv passed through unchanged so
+            # the tool scoping below holds; it reports a usage cap explicitly
             chat_env = {**NB_ENV, "NB_OPERATOR": "1", "NB_CLAUDE_BIN": CLAUDE_BIN}
             argv = [str(R/"bin"/"claudew"), "-p", prompt,
                     "--model", chat_model(),
+                    # only when set to a level the CLI accepts (see chat_effort)
+                    *(["--effort", chat_effort()] if chat_effort() else []),
                     "--permission-mode", "acceptEdits",
                     "--allowedTools",
                     "Read", "Grep", "Glob", "Edit", "Write", "WebSearch", "WebFetch",
-                    f"Bash({NB}:*)",
+                    "Task",   # dispatch to specialist subagents (.claude/agents/*)
+                    # Enumerated, NOT Bash({NB}:*). The wildcard granted every one of
+                    # ~56 subcommands — including `perms set` (self-un-gating), `sync`
+                    # (push), `run` (spawns unscoped sessions), and `server`/`jarvis`
+                    # — and would silently grant each new verb added in future.
+                    *[f"Bash({NB} {v}:*)" for v in OPERATOR_NB_VERBS],
                     f"Bash(python3 {R}/scripts/google/gmail.py:*)",
                     # solo events/reminders only — attendee invites + RSVPs
                     # hard-refuse inside gcalendar.py under NB_OPERATOR
                     f"Bash(python3 {R}/scripts/google/gcalendar.py:*)",
-                    "--disallowedTools",
-                    f"Read({home}/.secrets/**)", f"Grep({home}/.secrets/**)",
-                    f"Glob({home}/.secrets/**)", f"Edit({home}/.secrets/**)",
-                    f"Write({home}/.secrets/**)"]
+                    "--disallowedTools", *OPERATOR_DENIED_TOOLS]
             try:
-                r = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=chat_env)
+                # cwd in the repo so the operator discovers .claude/agents/* (the specialists)
+                r = subprocess.run(argv, capture_output=True, text=True, timeout=900,
+                                   env=chat_env, cwd=str(R))
             except subprocess.TimeoutExpired:
                 return self._json({"ok": True, "isError": True,
                                    "reply": "That took too long and timed out. Try a shorter ask."})
@@ -623,11 +765,23 @@ class H(http.server.SimpleHTTPRequestHandler):
                 send_request = prep if prep.get("ok") else None
                 if not prep.get("ok"):
                     out = (out + f"\n\n(Couldn't stage the send: {prep.get('error')})").strip()
+            # did the operator stage one or more calendar blocks? each becomes its own
+            # Approve card. The operator is fused out of gcalendar writes — only the tap commits.
+            cal_requests = []
+            for m in _CAL_MARKER.finditer(out):
+                prep = _prepare_block(m.group("title"), m.group("start"), m.group("end"))
+                if prep.get("ok"):
+                    cal_requests.append(prep)
+                else:
+                    out = (out + f"\n\n(Couldn't stage that block: {prep.get('error')})").strip()
+            out = _CAL_MARKER.sub("", out).strip()
             hist += [{"role": "nathan", "text": msg}, {"role": "nathanbot", "text": out}]
             chat_save(hist)
             resp = {"ok": True, "reply": out}
             if send_request:
                 resp["send_request"] = send_request
+            if cal_requests:
+                resp["cal_requests"] = cal_requests
             return self._json(resp)
 
         if path == "/api/mail/prepare":
@@ -650,6 +804,22 @@ class H(http.server.SimpleHTTPRequestHandler):
             if rc != 0:
                 return self._json({"ok": False, "error": (err or out or "send failed")[:300]})
             return self._json({"ok": True, "sent": True})
+
+        if path == "/api/cal/commit":
+            # writes a calendar block — fires ONLY on the owner's tap, with a valid one-use
+            # token. Runs gcalendar.py WITHOUT NB_OPERATOR (his approved act, not the model's).
+            token = body.get("token", "")
+            entry = _CAL_TOKENS.pop(token, None)
+            if not entry:
+                return self._json({"ok": False, "error": "expired or invalid approval — ask again"}, 400)
+            title, start, end, account, expiry = entry
+            if time.time() > expiry:
+                return self._json({"ok": False, "error": "approval expired — ask again"}, 400)
+            rc, out, err = _gcal("--account", account, "create", "--title", title,
+                                 "--start", start, "--end", end, timeout=30, drop_operator=True)
+            if rc != 0:
+                return self._json({"ok": False, "error": (err or out or "calendar write failed")[:300]})
+            return self._json({"ok": True, "created": True, "title": title, "start": start})
 
         if path == "/api/chat/clear":
             chat_save([])
