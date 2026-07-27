@@ -64,7 +64,7 @@ Better voices, still optional:
 ## 5. Make it ambient
 
 ```bash
-nb schedule install     # 07:30 brief · 22:00 digest · watcher every 30 min · weekly learning
+nb schedule install     # 07:30 brief · 22:00 digest · watcher every 2h · weekly learning
 nb schedule status
 ```
 
@@ -80,9 +80,6 @@ Remove everything just as easily: `nb schedule remove`.
 - **Hands-free "Jarvis" wake word** — needs a free Picovoice key in
   `~/.secrets/picovoice/access_key`, then `nb jarvis once` (grants mic) and
   `nb schedule install-jarvis`.
-- **Never-run-out fallback** — `bash scripts/setup-fallback.sh install` (Ollama +
-  a local model sized to your RAM). When your subscription caps, `bin/claudew`
-  silently reroutes calls to it; a `claude-fallback` telemetry event marks when it's covering.
 
 ## Where things live
 
@@ -95,4 +92,4 @@ Remove everything just as easily: `nb schedule remove`.
 | `~/.secrets/` | all keys, outside the repo, mode 700 |
 
 Something broken? `nb audit` self-checks the memory system; `nb jarvis status` checks
-the voice stack; `bash scripts/setup-fallback.sh status` checks the local brain.
+the voice stack.

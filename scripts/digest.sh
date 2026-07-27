@@ -21,7 +21,7 @@ if [ "${1:-}" = "--show" ]; then
 fi
 # NO early-exit on missing daily notes: chat/voice conversation is mined regardless,
 # otherwise everything the owner says to the operator evaporates unless he journals.
-command -v claude >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
+NB_CHECK=1 "$R/bin/claudew" >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
 
 printf "${B}Digesting %d daily note(s) + conversation...${X}\n" "${#notes[@]}"
 list=""; for n in "${notes[@]}"; do list+="- $n"$'\n'; done
@@ -54,4 +54,7 @@ Print a terse summary: N tasks filed, M facts saved, K corrections captured." \
 
 # keep the cross-harness promise: captured memory rides to the remote nightly,
 # so other machines/harnesses actually see it (AGENTS.md: commit+push by default)
-"$R/bin/nb" sync "chore: nightly digest write-back" >/dev/null 2>&1 || true
+# stderr is kept and the rc is reported: `|| true` on top of cmd_sync's own
+# swallowed error meant a failing nightly push was invisible from both ends.
+"$R/bin/nb" sync "chore: nightly digest write-back" >/dev/null \
+  || echo "digest: nightly sync failed (rc=$?) — nathanbot is not reaching the remote" >&2

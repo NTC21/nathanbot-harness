@@ -48,7 +48,8 @@ BAIL = {"never mind", "nevermind", "cancel", "stop", "forget it", "quit"}
 HALLUC = {"you", "thank you.", "thanks for watching!", "[blank_audio]", ".", ". .", "bye."}
 
 sys.path.insert(0, HERE)
-from prompt import build_operator_prompt  # noqa: E402
+from prompt import (build_operator_prompt, operator_allowed_tools,
+                    operator_denied_tools)  # noqa: E402
 
 CONVO = deque(maxlen=6)
 
@@ -186,16 +187,14 @@ def speak(text):
 
 def ask_operator(text):
     prompt = build_operator_prompt(ROOT, "\n".join(CONVO), text, channel="voice")
-    home = os.path.expanduser("~")
-    # claudew: same CLI, auto-falls back to the local brain when usage caps
-    argv = [os.path.join(ROOT, "bin", "claudew"), "-p", prompt, "--permission-mode", "acceptEdits",
-            "--allowedTools", "Read", "Grep", "Glob", "Edit", "Write", "WebSearch", "WebFetch",
-            f"Bash({NB}:*)", f"Bash(python3 {ROOT}/scripts/google/gmail.py:*)",
-            f"Bash(python3 {ROOT}/scripts/google/gcalendar.py:*)",  # solo events only (fused)
-            "--disallowedTools",
-            f"Read({home}/.secrets/**)", f"Grep({home}/.secrets/**)",
-            f"Glob({home}/.secrets/**)", f"Edit({home}/.secrets/**)",
-            f"Write({home}/.secrets/**)"]
+    # claudew: same CLI, reports a usage cap explicitly instead of failing opaquely.
+    # Tool scope comes from prompt.py, shared with the chat server — this used to
+    # keep its own copy, with a Bash(<nb>:*) wildcard granting all ~59 verbs and a
+    # denylist covering only ~/.secrets, on the less supervised of the two channels.
+    argv = [os.path.join(ROOT, "bin", "claudew"), "-p", prompt,
+            "--permission-mode", "acceptEdits",
+            "--allowedTools", *operator_allowed_tools(ROOT),
+            "--disallowedTools", *operator_denied_tools(ROOT)]
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=ENV)
     except subprocess.TimeoutExpired:

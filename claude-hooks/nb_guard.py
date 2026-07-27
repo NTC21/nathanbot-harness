@@ -115,10 +115,22 @@ DENY_WRITE = [
     *[os.path.join(NB_ROOT, p) for p in (
         "config/permissions.json", "config/projects.json", "prompts",
         "server/server.py", "bin/nb", "bin/claudew",
+        # These very guards. ~/.claude/hooks/* are SYMLINKS to this directory
+        # (install.sh), so naming only the install location protects nothing —
+        # a write there canonicalizes to here, and here was not on the list.
+        "claude-hooks",
+        # The identity registry. gmail.py reads the sending address from it and
+        # the Telegram approval card displays that value, so rewriting this file
+        # makes the card show a false identity — defeating the one thing it
+        # exists to show truthfully.
+        "config/accounts.json",
+        # The canonical entry doc every harness reads, and its Claude pointer.
+        # A write here is durable prompt injection into every future session.
+        "AGENTS.md", "CLAUDE.md",
     )],
     # Claude Code's own configuration and these very hooks
     _h(".claude", "settings.json"), _h(".claude", "hooks"),
-    _h(".claude", "agents"),
+    _h(".claude", "agents"), _h(".claude", "CLAUDE.md"),
     # git hooks — these execute on every commit, so a write here is arbitrary
     # code execution under the owner's identity at his next commit. Matched by
     # suffix (see _under_githooks) since they live in every repo, not one path.
@@ -166,18 +178,63 @@ def _load_local_denies():
 DENY_ALL += _load_local_denies()
 
 
+def _abs(path):
+    """Expanded and absolute, but deliberately NOT canonicalized.
+
+    Keeps symlinks intact so the literal spelling can be matched — see _under_raw.
+    """
+    p = os.path.expanduser(str(path))
+    if not os.path.isabs(p):
+        p = os.path.abspath(p)
+    return os.path.normpath(p).replace("\\", "/")
+
+
 def _under(path, root):
     """True if `path` is `root` or sits beneath it. Both already canonical."""
     p, r = path.casefold(), canonical(root).casefold()
     return p == r or p.startswith(r.rstrip("/") + "/")
 
 
-def is_operator():
-    """True when running as the unattended nathanbot operator rather than as
-    the owner interactively. The self-protection tier only makes sense for the
-    former: a background run must not be able to widen its own permissions,
-    while the owner editing their own shell rc or these hooks is ordinary work."""
-    return bool(os.environ.get("NB_OPERATOR"))
+def _under_raw(path, root):
+    """Same containment test, on literal (un-canonicalized) paths.
+
+    Canonicalizing a symlink resolves the DENIED location away while the write
+    still lands on the file the denied location loads. Every installed guard is
+    a symlink into this repo, so ~/.claude/hooks/nb_guard.py canonicalized to
+    ~/Projects/nathanbot/claude-hooks/nb_guard.py — a path the list did not name
+    — and writing the live guard was allowed. Matching both spellings closes it
+    whichever end of the link the denylist happens to name.
+    """
+    p, r = _abs(path).casefold(), _abs(root).casefold()
+    return p == r or p.startswith(r.rstrip("/") + "/")
+
+
+def is_unattended():
+    """True when nobody is approving tool calls one by one.
+
+    The self-protection tier only makes sense for that case: a run with no human
+    in the loop must not be able to widen its own permissions, while the owner
+    editing their own shell rc or these hooks is ordinary work.
+
+    Two sources, because one flag was carrying two meanings and the merge cost us
+    the entire tier once already:
+
+      NB_OPERATOR    the chat/voice operator (server.py, jarvis.py). ALSO
+                     suppresses sending mail, calendar writes, git push and
+                     --apply at call sites across bin/nb and scripts/google/.
+      NB_UNATTENDED  any headless run — set by bin/claudew and scripts/rundue.sh.
+                     Says nothing about what the run may DO, only that nobody is
+                     watching it do it.
+
+    Read the union here. Never the reverse: keying the suppression fuses on
+    NB_UNATTENDED would break the scheduled jobs, which exist to apply things.
+    """
+    return bool(os.environ.get("NB_OPERATOR") or os.environ.get("NB_UNATTENDED"))
+
+
+# The old name was only ever accurate while NB_OPERATOR was the sole way to be
+# unattended. Kept because guard-bash.py and server.py import it.
+is_operator = is_unattended
 
 
 def check(path, write, operator=None):
@@ -197,7 +254,7 @@ def check(path, write, operator=None):
     # symlink to a tracked copy elsewhere (nathanbot installs its own that way),
     # and canonicalizing would resolve the dangerous location away while the
     # write still lands executable code in .git/hooks.
-    literal = os.path.expanduser(str(path)).replace("\\", "/")
+    literal = _abs(path)
     if write and operator and ("/.git/hooks/" in c.replace("\\", "/")
                                or "/.git/hooks/" in literal):
         return ("git hooks execute on every commit, so writing one is arbitrary "
@@ -205,16 +262,18 @@ def check(path, write, operator=None):
                 "   Denied for unattended runs. The owner installs hooks themselves "
                 "(nathanbot: scripts/hooks/install.sh).")
 
+    # Both spellings, everywhere: the canonical path catches a symlink POINTING AT
+    # a denied file, the literal path catches a symlink that IS one.
     for root in DENY_ALL:
-        if _under(c, root):
+        if _under(c, root) or _under_raw(path, root):
             return (f"'{root}' is on the nathanbot deny-list (read+write).\n"
                     f"   Credentials, session cookies, and private messages are off limits "
                     f"to automated tools — disclosure there is not fixable by rotating a password.")
     if write and operator:
         for root in DENY_WRITE:
-            if _under(c, root):
+            if _under(c, root) or _under_raw(path, root):
                 return (f"'{root}' is write-protected while running unattended "
-                        f"(NB_OPERATOR).\n"
+                        f"(NB_OPERATOR/NB_UNATTENDED).\n"
                         f"   An automated run must not change its own permissions, persist "
                         f"across sessions, or alter the system. The owner can edit this directly.")
 

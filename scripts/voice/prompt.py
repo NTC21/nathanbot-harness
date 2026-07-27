@@ -1,7 +1,9 @@
-"""Shared operator-prompt builder — ONE source of truth for both the dashboard
-(server/server.py) and the voice daemon (scripts/voice/jarvis.py), so the two stay in
-lockstep. The template lives in prompts/operator.md."""
+"""Shared operator contract — ONE source of truth for both the chat server
+(server/server.py) and the voice daemon (scripts/voice/jarvis.py): the prompt AND
+the tool scope, so the two channels cannot drift apart. The prompt template lives
+in prompts/operator.md."""
 import os
+import sys
 from datetime import datetime
 
 # Voice replies are heard, not read — keep them to a spoken sentence, no markup.
@@ -61,3 +63,67 @@ def build_operator_prompt(root, convo, msg, channel="chat"):
             .replace("{{CONVO}}", convo or "(none)")
             .replace("{{MSG}}", msg)
             .replace("{{CHANNEL_NOTE}}", _NOTES.get(channel, "")))
+
+
+# ── operator tool scope — SHARED by the chat server and the voice daemon ──────
+# Both channels reach the same operator with the same fuses, so they must have the
+# same tool scope. They did not: server.py enumerated the nb verbs and derived a
+# ~50-root credential denylist from nb_guard, while jarvis.py kept a
+# `Bash(<nb>:*)` wildcard and denied only ~/.secrets — no second layer over
+# browser cookies, keychains, Messages or its own rails, on the LESS supervised of
+# the two channels. Constructed here so that cannot drift again.
+
+OPERATOR_NB_VERBS = [
+    # capture + read-only status
+    "add", "inbox", "next", "status", "brief", "watch", "audit",
+    # knowledge in / out — the whole point of the operator
+    "remember", "feedback", "wiki", "study", "news", "activity",
+    # planning + task hygiene (non-destructive forms)
+    "triage", "plan", "done", "decide",
+    # calendar staging — gcalendar.py is separately fused, so this can only stage
+    # a [[CAL_BLOCK]] marker for the owner to approve
+    "cal",
+]
+# NOT granted, deliberately: "perms". allowedTools matches by prefix, so
+# Bash(nb perms:*) would also grant `nb perms set email.send always`. There is no
+# way to split show from set at the flag level, so the whole verb stays out. The
+# operator does not need to introspect its permissions; it needs to obey them.
+
+
+def operator_allowed_tools(root):
+    nb = os.path.join(root, "bin", "nb")
+    return ["Read", "Grep", "Glob", "Edit", "Write", "WebSearch", "WebFetch", "Task",
+            *[f"Bash({nb} {v}:*)" for v in OPERATOR_NB_VERBS],
+            f"Bash(python3 {root}/scripts/google/gmail.py:*)",
+            f"Bash(python3 {root}/scripts/google/gcalendar.py:*)"]
+
+
+def operator_denied_tools(root):
+    """Second layer behind the PreToolUse guard, derived from the guard's own list.
+
+    Derived rather than restated: a hand-maintained copy drifts, and this file
+    ships in the public template — hardcoding a machine's vault directory names
+    would publish the layout that claude-hooks/deny-local.txt exists to keep
+    private. nb_guard loads deny-local.txt itself, so per-machine additions flow
+    through without appearing here.
+    """
+    h = os.path.expanduser("~")
+    try:
+        sys.path.insert(0, os.path.join(root, "claude-hooks"))
+        from nb_guard import DENY_ALL as roots
+    except Exception as e:
+        # Loud. This silently returned the short list once already (a missing
+        # `import sys` raised NameError straight into this handler), and a
+        # quietly-weaker denylist is the exact failure this whole layer is for.
+        print(f"WARNING: nb_guard unavailable ({e!r}) — falling back to a MINIMAL "
+              f"credential denylist. The PreToolUse guard is still the real "
+              f"boundary, but fix this.", file=sys.stderr)
+        roots = [f"{h}/.secrets", f"{h}/.ssh", f"{h}/.aws", f"{h}/.gnupg",
+                 f"{h}/.config/gh", f"{h}/Library/Keychains", f"{h}/Library/Cookies"]
+    out = [f"{tool}({r}/**)" for r in roots
+           for tool in ("Read", "Grep", "Glob", "Edit", "Write")]
+    for p in (f"{h}/.claude/settings.json", f"{h}/.claude/hooks",
+              f"{root}/claude-hooks", f"{root}/config/permissions.json",
+              f"{root}/config/accounts.json", f"{root}/prompts"):
+        out += [f"Edit({p}/**)", f"Write({p}/**)", f"Edit({p})", f"Write({p})"]
+    return out

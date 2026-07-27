@@ -40,7 +40,10 @@ except (OSError, ValueError):
 h = d.setdefault("hooks", collections.OrderedDict())
 want = [
     ("Bash", f"python3 {hooks_dir}/guard-bash.py"),
-    ("Read|Write|Edit|Grep|Glob|NotebookEdit", f"python3 {hooks_dir}/guard-paths.py"),
+    # mcp__.* too: the FIELDS map in guard-paths.py is a closed enumeration and
+    # fails open, so an MCP server that takes a local path (Word, PowerPoint,
+    # the browser file_upload tools) was never screened at all.
+    ("Read|Write|Edit|Grep|Glob|NotebookEdit|mcp__.*", f"python3 {hooks_dir}/guard-paths.py"),
 ]
 pre = [g for g in h.get("PreToolUse", [])
        if not any("guard-bash.py" in x.get("command", "") or "guard-paths.py" in x.get("command", "")

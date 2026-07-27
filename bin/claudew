@@ -20,6 +20,20 @@
 set -uo pipefail
 R="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin"   # launchd gives a bare PATH
+
+# Headless means nobody is approving tool calls one by one — which is exactly the
+# condition the guards' self-protection tier exists for. Mark it HERE rather than
+# in each launchd plist: the tier only ever applies inside a claude session, and
+# this file is the one thing that starts them. So a new scheduled job is covered
+# by construction instead of by remembering a plist key — and this also covers
+# com.nathanbot.server and skhd, whose plists have no generator in this repo, plus
+# a manual `nb evolve` run from a terminal.
+#
+# Deliberately NOT NB_OPERATOR. That flag additionally means "this is the chat
+# operator" and suppresses sending mail, calendar writes, git push and --apply
+# (bin/nb, scripts/google/*, scripts/learn.sh). The scheduled jobs exist to apply
+# things; setting NB_OPERATOR here would quietly turn them into no-ops.
+export NB_UNATTENDED=1
 # no call site pipes stdin; a non-tty pipe makes claude stall 3s waiting for it
 [ -t 0 ] || exec </dev/null
 
@@ -32,6 +46,15 @@ if [ -z "$REAL" ] || [ ! -x "$REAL" ]; then
   done
 fi
 [ -n "${REAL:-}" ] && [ -x "$REAL" ] || { echo "claudew: claude CLI not found" >&2; exit 127; }
+
+# NB_CHECK=1 resolves and exits without running anything. Callers gate on this
+# instead of `command -v claude`, which was the wrong question: launchd hands a
+# bare PATH and runs `bash -lc`, which sources bash login files — and there are
+# none on this machine, so ~/.local/bin (added by .zshrc) never appears. Every
+# AI-backed scheduled job therefore died on its own gate one line BEFORE calling
+# this file, which resolves the binary itself and would have found it.
+# tasks/logs/digest.err is the receipt: "claude CLI not found".
+[ -n "${NB_CHECK:-}" ] && { printf '%s\n' "$REAL"; exit 0; }
 
 out="$(mktemp)"; err="$(mktemp)"
 trap 'rm -f "$out" "$err"' EXIT

@@ -11,7 +11,7 @@
 #   evolve  weekly Mon 08:00 — proposes improvements as needs-decision tasks.
 #   scout   monthly 1st 08:30 — researches new tools, writes wiki pages.
 #
-# Nothing scheduled ever pushes code or merges. Execution (`nb run`) stays manual
+# The 22:45 sync job commits+pushes THIS repo. Nothing pushes project code or merges. Execution (`nb run`) stays manual
 # until you explicitly add it.
 set -euo pipefail
 
@@ -119,10 +119,15 @@ EOF
     echo "  digest  daily 22:00      (daily notes -> tasks + wiki facts)"
     echo "  watch   every 2 hours    (ambient: meetings, stale repos, VIP mail)"
     echo "  tidy    Sundays 09:00    (report only)"
-    echo "  evolve  Mondays 08:00    (proposals -> needs-decision tasks)"
+    echo "  evolve  Mondays 08:00    (--apply: auto-fixes the safe tier, then proposes)"
+    echo "  learn   Mondays 08:30    (--apply: model-of-the owner edits from explicit feedback)"
+    echo "  groom   Sundays 09:30    (--apply: archives stale tasks)"
+    echo "  sync    daily 22:45      (commit + push THIS repo)"
     echo "  scout   1st of month     (new tools -> wiki pages)"
     echo
-    echo "Nothing scheduled pushes code or merges. 'nb run' stays manual."
+    echo "  This list is hand-maintained and drifts. 'nb schedule status' is the truth."
+    echo
+    echo "The 22:45 sync job commits+pushes THIS repo; nothing pushes project code or merges. 'nb run' stays manual."
     ;;
   status)
     echo "Loaded jobs:"
@@ -247,7 +252,10 @@ EOF
     echo "  Quit the Voicebox GUI if it's open (it would fight for the port)."
     ;;
   remove)
-    for n in brief digest sync watch tidy evolve scout groom learn jarvis voicebox telegram nudge activity news ccr; do
+    # server and skhd are installed by hand (no generator in this repo), so they
+    # survived `remove` and kept running. ccr dropped — nothing ever installed it.
+    for n in brief digest sync watch tidy evolve scout groom learn jarvis voicebox \
+             telegram nudge activity news server skhd; do
       p="$LA/$PREFIX.$n.plist"
       # || true: under set -e a plist that exists but isn't loaded must not abort the loop
       [ -e "$p" ] && { launchctl unload "$p" 2>/dev/null || true; }

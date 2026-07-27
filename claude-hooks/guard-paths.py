@@ -27,6 +27,21 @@ FIELDS = {
 }
 
 
+def _strings(obj, depth=0):
+    """Every string in a nested tool_input, so an unknown tool's path argument is
+    found wherever its schema happens to put it."""
+    if depth > 6:
+        return
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _strings(v, depth + 1)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _strings(v, depth + 1)
+
+
 def main():
     raw = sys.stdin.read()
     if not raw.strip():
@@ -42,6 +57,24 @@ def main():
     tool = payload.get("tool_name", "")
     tin = payload.get("tool_input") or {}
     if tool not in FIELDS:
+        # FIELDS is a closed enumeration, so anything not named fails OPEN. That is
+        # fine for tools with no filesystem reach and wrong for the ones that have
+        # it — MCP servers for Word, PowerPoint and the browsers all take local
+        # paths and none of them are in this list, nor could they be: the set
+        # depends on which servers are connected.
+        #
+        # So for unknown tools, screen every path-shaped string in the arguments
+        # against the credential tier. Read semantics only (write=False): DENY_ALL
+        # is denied in both directions, which is the part worth protecting, and
+        # guessing write on an unknown schema would fence off ordinary work.
+        for val in _strings(tin):
+            if "/" not in val and not val.startswith("~"):
+                continue
+            reason = check(val, write=False)
+            if reason:
+                print(f"BLOCKED by nathanbot path guard — {tool} argument "
+                      f"'{val}': {reason}", file=sys.stderr)
+                return 2
         return 0
 
     field, is_write = FIELDS[tool]

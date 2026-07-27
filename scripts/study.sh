@@ -9,7 +9,7 @@
 #   pbpaste | nb study
 set -uo pipefail
 R="$(cd "$(dirname "$0")/.." && pwd)"
-command -v claude >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
+NB_CHECK=1 "$R/bin/claudew" >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
 B=$'\033[1m'; X=$'\033[0m'
 
 src="${1:-}"; mode="text"; payload=""

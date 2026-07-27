@@ -30,8 +30,8 @@ archive() {
   local f="$1" why="$2"
   printf "  %s%-12s%s %-52s %s%s%s\n" "$Y" "$(fm "$f" id)" "$X" "$(fm "$f" title | cut -c1-52)" "$D" "$why" "$X"
   if $APPLY; then
-    printf '\narchived: %s — %s\n' "$(date +%Y-%m-%d)" "$why" >> "$f"
-    mv "$f" "$ARCH/"
+    printf '\narchived: %s — %s\n' "$(date +%Y-%m-%d)" "$why" >> "$f" \
+      && mv "$f" "$ARCH/"
   fi
 }
 
@@ -64,9 +64,12 @@ for f in "$DONE"/*.md; do
   [ "$a" -le 90 ] && continue
   c=$((c+1))
   if $APPLY; then
-    mon=$(fm "$f" created | cut -c1-7)
-    printf -- '- %s %s\n' "$(fm "$f" id)" "$(fm "$f" title)" >> "$ARCH/done-$mon.md"
-    rm "$f"
+    # && not ; — this file is set -uo pipefail with no -e, so a failed append
+    # used to delete the task anyway and the digest line was simply lost.
+    # An empty created: also put everything in a file literally named "done-.md".
+    mon=$(fm "$f" created | cut -c1-7); [ -n "$mon" ] || mon=undated
+    printf -- '- %s %s\n' "$(fm "$f" id)" "$(fm "$f" title)" >> "$ARCH/done-$mon.md" \
+      && rm "$f"
   fi
 done
 [ "$c" -eq 0 ] && printf "  %snone%s\n" "$D" "$X" || printf "  %s task(s) %s\n" "$c" "$($APPLY && echo 'compressed into monthly digests' || echo 'would be compressed')"

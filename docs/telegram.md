@@ -1,7 +1,7 @@
 # Telegram — the two-way phone channel
 
 nathanbot texts you and you text back, from anywhere. Your messages route to the same
-operator the dashboard uses (all its safety fuses apply); email-send approvals arrive as
+operator the CLI uses (all its safety fuses apply); email-send approvals arrive as
 inline **Approve / Cancel** buttons. Telegram holds messages ~24h server-side, so anything
 you send while the Mac sleeps is processed when it wakes. $0, no VPS.
 
@@ -29,7 +29,7 @@ you send while the Mac sleeps is processed when it wakes. $0, no VPS.
 - `nb schedule install-telegram` / `nb schedule remove` — start/stop the always-on job.
 
 ## Notes
-- The listener talks to the local UI server (`http://127.0.0.1:7777`), which stays running as
-  the headless brain/API — you no longer need to open the dashboard app for day-to-day use.
+- The listener talks to the local API server (`http://127.0.0.1:7777`), which stays running as
+  the headless brain/API — day-to-day use never needs a computer.
 - Sleep caveat: the Mac still has to wake to process. Telegram queues up to 24h, so brief sleeps
   are fine; a Mac off all day won't reply until it's back.

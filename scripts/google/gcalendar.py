@@ -21,6 +21,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import auth  # noqa: E402
 
 
+def unattended():
+    """True when nobody is approving actions one by one.
+
+    Mirrors claude-hooks/nb_guard.is_unattended(). These fuses used to read
+    NB_OPERATOR alone, so a scheduled job — which sets NB_UNATTENDED and not
+    NB_OPERATOR — could write to the calendar with no human in the loop.
+    """
+    return bool(os.environ.get("NB_OPERATOR") or os.environ.get("NB_UNATTENDED"))
+
+
 def local_tz():
     """Best-effort IANA timezone name so events don't silently land in UTC."""
     p = os.path.realpath("/etc/localtime")
@@ -98,7 +108,7 @@ def cmd_create(a):
     # with no attendees. The operator only STAGES a block via the [[CAL_BLOCK]] marker; the
     # server commits it WITHOUT NB_OPERATOR after the owner taps Approve. (Inviting attendees is
     # additionally outward-facing.) This closes the gap where an attendee-less create wasn't fused.
-    if os.environ.get("NB_OPERATOR"):
+    if unattended():
         sys.exit("REFUSED — creating calendar events is disabled for the operator.\n"
                  "Stage it as a [[CAL_BLOCK]] marker; the owner taps Approve to commit.")
     if attendees and a.yes != a.account:
@@ -135,7 +145,7 @@ def cmd_create(a):
 
 
 def cmd_respond(a):
-    if os.environ.get("NB_OPERATOR"):
+    if unattended():
         sys.exit("REFUSED — RSVPs are visible to the organizer; disabled for the operator.")
     if a.yes != a.account:
         sys.exit(f"An RSVP is visible to the organizer. Re-run with:  --yes {a.account}")
@@ -250,7 +260,7 @@ def cmd_planday(a):
         print(f"    --:-- (no slot)  {t}")
 
     if a.commit:
-        if os.environ.get("NB_OPERATOR"):
+        if unattended():
             sys.exit("REFUSED — writing calendar blocks is the owner's call; disabled for the operator.")
         service, _email = svc(a.account or "personal")
         tzname = local_tz()

@@ -32,13 +32,30 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOME = os.path.expanduser("~")
 
 # Memory surfaces: docs whose claims a future session will act on.
-SCAN_DIRS = ["wiki", "career", "shared-memory", "prompts", "hermes"]
+#
+# public/ docs/ capabilities/ workspace*/ were added 2026-07-26 after a full audit
+# found ~30 false claims while this reported clean. Every one of them lived in a
+# directory this list did not name — including public/, which was already in
+# REPO_DIRS below (so its paths were link TARGETS) but was never itself scanned.
+# capabilities/ matters most: its guidance is composed into other repos'
+# CAPABILITIES.md, and the copy there had the email-identity rule inverted.
+SCAN_DIRS = ["wiki", "career", "shared-memory", "prompts", "hermes",
+             "public", "docs", "capabilities",
+             "workspace", "workspace-admin", "workspace-coding",
+             "workspace-creative", "workspace-research"]
 # .env.example is scanned because it is documentation that gets acted on: it told
 # readers "real secrets live in ~/.secrets/ai-hub.env" for as long as that file
 # did not exist. A doc pointing at a nonexistent secrets file is the same failure
 # class as a stale wiki page, and worse in consequence — someone follows it and
 # writes a key somewhere nothing loads.
-SCAN_FILES = ["AGENTS.md", "README.md", ".env.example"]
+SCAN_FILES = ["AGENTS.md", "README.md", "START-HERE.md", ".env.example"]
+
+# Bare filenames a doc claims exist. PATH_RE below only matches paths WITH a
+# directory component, so `docx2pdf.sh` and `.mcp.json` — both named as real
+# tooling in docs, neither present anywhere — were invisible to it. Only
+# script-ish extensions, and only inside backticks, to keep the false-positive
+# rate near zero: prose mentioning "config.json" generically should not fire.
+BARE_FILE_RE = re.compile(r"`([\w.-]+\.(?:sh|py|js|ts|tex|plist))`")
 
 # Illustrative rather than asserted: placeholders, examples, currency (~$40K reads
 # as a ~/ path), URLs, API routes, and git remotes. A check that cries wolf gets
@@ -55,15 +72,29 @@ PATH_IGNORE = re.compile(
 #   ~/dir/thing        (home-anchored, at least one slash below ~)
 #   knownrepodir/thing (anchored to a directory that actually exists in the repo)
 REPO_DIRS = r"wiki|career|scripts|config|bin|server|prompts|tasks|shared-memory|hermes|public"
+# The backtick branch stops at a space instead of requiring the closing backtick,
+# because docs backtick whole COMMANDS: `scripts/setup-fallback.sh install`. The
+# old pattern needed the backticks to wrap a bare path, and the plain branch's
+# lookbehind then rejected it for being preceded by a backtick — so every
+# backticked command-with-arguments was invisible. That is the exact shape of the
+# claim (a removed installer, still being recommended) this was written to catch.
 PATH_RE = re.compile(
-    r"`(~/[\w.-]+/[\w./-]+|(?:" + REPO_DIRS + r")/[\w./-]+)`"      # inside backticks
+    r"`(~/[\w.-]+/[\w./-]+|(?:" + REPO_DIRS + r")/[\w./-]+)(?=[\s`])"   # backticked
     r"|(?<![\w/`])(~/[\w.-]+/[\w./-]+|(?:" + REPO_DIRS + r")/[\w./-]+\.\w+)")
-NB_RE = re.compile(r"`?\bnb ([a-z][a-z-]{1,20})\b")
+# Backtick, line start, or after a shell prompt/pipe — NOT mid-sentence. Prose
+# like "put nb on your PATH" was reported as a dead `nb on` command.
+NB_RE = re.compile(r"(?:`|^|\$ |\| )nb ([a-z][a-z-]{1,20})\b", re.M)
 DATE_RE = re.compile(r"(?:confirmed|as of|verified|updated)[:\s(]*(\d{4})-(\d{2})-(\d{2})", re.I)
 
 
-def nb_verbs():
-    """Real subcommands, read from bin/nb's dispatch table."""
+def nb_verbs(canonical_only=False):
+    """Real subcommands, read from bin/nb's dispatch table.
+
+    canonical_only keeps just the first name in each `a|b|c)` arm. Staleness wants
+    every spelling (a doc naming an alias is not stale); usage analysis wants the
+    canonical one, or `proj`, `talk` and `say` each count as separate commands
+    the owner "never uses" while he uses the verb they alias.
+    """
     verbs = set()
     try:
         src = open(os.path.join(ROOT, "bin", "nb")).read()
@@ -71,7 +102,8 @@ def nb_verbs():
         return verbs
     body = src.split("case ", 1)[-1]
     for m in re.finditer(r"^\s{2}([a-z][a-z|_-]*)\)", body, re.M):
-        verbs.update(m.group(1).split("|"))
+        names = m.group(1).split("|")
+        verbs.update(names[:1] if canonical_only else names)
     return verbs
 
 
@@ -82,7 +114,11 @@ def scan_files():
         for base, _, files in os.walk(p):
             if "/.git" in base:
                 continue
-            out += [os.path.join(base, f) for f in files if f.endswith(".md")]
+            # .yaml too: capabilities/ are YAML, and their `guidance:` blocks are
+            # composed verbatim into other repos' CAPABILITIES.md — prose an agent
+            # acts on, in exactly the way a wiki page is.
+            out += [os.path.join(base, f) for f in files
+                    if f.endswith((".md", ".yaml", ".yml"))]
     out += [os.path.join(ROOT, f) for f in SCAN_FILES if os.path.exists(os.path.join(ROOT, f))]
     return out
 
@@ -117,6 +153,17 @@ def main():
         if re.search(r"^stale-check:\s*off\b", text[:600], re.M):
             continue
 
+        # Point-in-time records: a dated session note and a dated audit report say
+        # what was true THEN. "Exported 63 stashes to ~/Projects/.stash-backup-
+        # 2026-07-21/" is a correct record of that day even after the directory is
+        # deleted, and a dated audit necessarily quotes the broken things it found.
+        # Curated state files (workspace-*/MEMORY.md, wiki pages) are the opposite:
+        # they assert what is true NOW, so they stay in scope.
+        if re.search(r"/memory/\d{4}-\d{2}-\d{2}\.md$", rel) or \
+           re.search(r"^docs/audit-\d{4}-\d{2}-\d{2}\.md$", rel) or \
+           re.search(r"^wiki/daily/", rel):
+            continue
+
         lines = text.splitlines()
         for i, line in enumerate(lines, 1):
             if line.lstrip().startswith(">"):        # quoted/historical
@@ -124,10 +171,14 @@ def main():
             # Text that documents a removal necessarily names the removed thing —
             # that is memory working correctly, not drifting. Prose wraps, so judge
             # the surrounding sentence rather than the single line.
-            window = " ".join(lines[max(0, i - 2):i + 1])
-            if re.search(r"\b(removed|deleted|retired|deprecated|superseded|"
+            # 5 lines back, not 2: these are wrapped markdown paragraphs. The
+            # liked-repos entry says "NOT CONFIGURED ... has never been created"
+            # and then gives setup instructions three lines later — the mkdir in
+            # those instructions is not a claim the directory exists.
+            window = " ".join(lines[max(0, i - 5):i + 1])
+            if re.search(r"\b(removed|deleted|retired|deprecated|superseded|gone|"
                          r"do not rebuild|no longer|was cut|formerly|since been|"
-                         r"not configured|to enable|"
+                         r"not configured|"
                          r"never\s+(been\s+)?(built|created|existed|shipped|configured))\b",
                          window, re.I):
                 continue
@@ -140,6 +191,15 @@ def main():
                 tok = (m.group(1) or m.group(2) or "").strip()
                 if not tok or PATH_IGNORE.search(tok):
                     continue
+                # public/ is setup instructions for a TEMPLATE USER, so a ~/ path
+                # there describes their machine, not this one — "put your key in
+                # ~/.secrets/picovoice/access_key" is a correct instruction even
+                # though no such file exists here. Repo-relative paths in public/
+                # ARE still checked, which is the case that matters: it is how
+                # `scripts/setup-fallback.sh` survived in a shipped doc for a day
+                # after being deleted.
+                if rel.startswith("public/") and tok.startswith("~/"):
+                    continue
                 if " " in tok and not tok.startswith("~/"):
                     continue
                 if not (tok.startswith("~/") or "/" in tok):
@@ -149,6 +209,23 @@ def main():
                 target = resolve(tok)
                 if not os.path.exists(target):
                     findings.append((rel, i, "missing path", tok))
+
+            # 1b. bare filenames claimed as real tooling. PATH_RE needs a directory
+            #     component, so `docx2pdf.sh` and `.mcp.json` — both named in docs
+            #     as things you run, neither existing anywhere — slipped past it.
+            for m in BARE_FILE_RE.finditer(line):
+                name = m.group(1)
+                if PATH_IGNORE.search(name):
+                    continue
+                roots = [ROOT, os.path.join(HOME, "Projects")]
+                hits = subprocess.run(
+                    ["find", *[r for r in roots if os.path.isdir(r)],
+                     "-name", name, "-not", "-path", "*/.git/*",
+                     "-not", "-path", "*/.venv/*",
+                     "-not", "-path", "*/node_modules/*", "-print", "-quit"],
+                    capture_output=True, text=True).stdout.strip()
+                if not hits and not os.path.exists(os.path.join(HOME, name)):
+                    findings.append((rel, i, "missing file", name))
 
             # 2. nb verbs that no longer exist
             for m in NB_RE.finditer(line):

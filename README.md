@@ -146,7 +146,7 @@ The brain, the CLI, and the **phone bridge** are portable; the ambient schedulin
 | Google mail/calendar scripts | |
 
 Practical Windows setup: install WSL2 + Ubuntu, follow Quick start inside WSL (schedule
-`nb brief`/`nb telegram`/`nb nudge` with cron instead of launchd). The Telegram interface is the
+`nb brief`/`nb telegram` and `scripts/proactive/nudge.py` with cron instead of launchd). The Telegram interface is the
 same everywhere — that's the point.
 
 ## Philosophy

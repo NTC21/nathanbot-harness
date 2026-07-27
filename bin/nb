@@ -31,6 +31,16 @@
 #   nb wiki index|lint     rebuild wiki/index.md from frontmatter; lint pages vs SCHEMA
 #   nb tidy [--apply]      machine maintenance: caches, dormant deps, uncommitted work
 #
+#   nb review              promote or drop AI-proposed tasks  (alias: suggestions)
+#   nb ready <id>          greenlight a proposed task         (alias: ok)
+#   nb plan-day [--commit] propose calendar time-blocks for the top ready tasks
+#   nb cal <cmd>           calendar: agenda|today|list|search (writes are staged)
+#   nb news                morning news brief
+#   nb telegram            phone bridge — run the Telegram listener  (alias: tg)
+#   nb activity            what shipped across your repos recently  (alias: ship)
+#   nb project <cmd>       projects: new|add|list                    (alias: proj)
+#   nb deliver "<text>"    push a message to your phone
+#
 #   nb audit               self-heal check on the memory system
 #   nb stale               find memory that no longer matches reality
 #   nb new <name> [--type] scaffold a new project
@@ -45,8 +55,9 @@ set -uo pipefail
 
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# every AI call goes through claudew: identical to `claude`, but auto-falls
-# back to the local Ollama brain when subscription usage caps (never stops)
+# every AI call goes through claudew: identical to `claude`, but reports a usage
+# cap explicitly and marks the run unattended (NB_UNATTENDED) for the guards.
+# Gate on `NB_CHECK=1 "$CLAUDE"`, never `command -v claude` — see bin/claudew.
 CLAUDE="$R/bin/claudew"
 
 # ── task-writing standard — injected into every generator so no task is ever cryptic.
@@ -91,7 +102,7 @@ cmd_add() {
   # TASKS PAUSED: captures stay in the inbox; nothing auto-becomes a task.
   # Re-enable the task system by setting NB_TASKS_ON=1 (and restoring the operator
   # + digest/scout jobs). Opt out separately with NB_NO_AUTOTRIAGE=1.
-  if [ -n "${NB_TASKS_ON:-}" ] && [ -z "${NB_NO_AUTOTRIAGE:-}" ] && command -v claude >/dev/null 2>&1; then
+  if [ -n "${NB_TASKS_ON:-}" ] && [ -z "${NB_NO_AUTOTRIAGE:-}" ] && NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1; then
     ( _autotriage ) >/dev/null 2>&1 &
   fi
   return 0
@@ -124,7 +135,7 @@ cmd_inbox() {
 cmd_triage() {
   local n; n=$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)
   [ "$n" -eq 0 ] && { printf "${c_d}inbox empty — nothing to triage${c_0}\n"; return 0; }
-  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1 || die "claude CLI not found"
 
   # snapshot EXACTLY the items we're triaging — anything captured during triage survives
   local snap; snap=$(mktemp)
@@ -328,13 +339,16 @@ cmd_review() {    # AI suggestions ('proposed') waiting on you — promote or dr
 }
 
 cmd_status() {
-  local ready=0 blocked=0 decide=0 running=0 done_n=0 proposed=0
+  local ready=0 blocked=0 decide=0 running=0 done_n=0 proposed=0 failed=0
   for f in "$OPEN"/*.md; do
     [ -e "$f" ] || continue
     case "$(_fm "$f" status)" in
       ready) ready=$((ready+1)) ;; blocked) blocked=$((blocked+1)) ;;
       needs-decision) decide=$((decide+1)) ;; running) running=$((running+1)) ;;
       proposed) proposed=$((proposed+1)) ;;
+      # cmd_run writes this on a failed task and the API accepts it, but no
+      # reader displayed it — so a failed task was invisible in every surface
+      failed) failed=$((failed+1)) ;;
     esac
   done
   for f in "$DONE"/*.md; do [ -e "$f" ] && done_n=$((done_n+1)); done
@@ -344,6 +358,14 @@ cmd_status() {
   printf "  ${c_y}running${c_0}        %s\n" "$running"
   printf "  ${c_y}blocked${c_0}        %s\n" "$blocked"
   printf "  ${c_r}needs decision${c_0} %s\n" "$decide"
+  if [ "$failed" -gt 0 ]; then
+    printf "  ${c_r}failed${c_0}         %s  ${c_d}(ran and did not finish)${c_0}\n" "$failed"
+    for f in "$OPEN"/*.md; do
+      [ -e "$f" ] || continue
+      [ "$(_fm "$f" status)" = "failed" ] || continue
+      printf "    ${c_r}%-10s${c_0} %s\n" "$(_fm "$f" id)" "$(_fm "$f" title | sed 's/^"//;s/"$//' | cut -c1-56)"
+    done
+  fi
   printf "  ${c_d}done${c_0}           %s\n" "$done_n"
   printf "  ${c_d}inbox untriaged %s${c_0}\n" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)"
 
@@ -360,7 +382,7 @@ cmd_status() {
 # ── plan: decompose a goal ───────────────────────────────────────────────────
 cmd_plan() {
   [ $# -gt 0 ] || die "usage: nb plan \"the big thing you want\""
-  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1 || die "claude CLI not found"
   printf "${c_b}Planning:${c_0} %s\n" "$*"
   "$CLAUDE" -p "Decompose this goal into independently executable tasks for the owner's nathanbot system.
 
@@ -393,7 +415,7 @@ cmd_run() {
     esac
     shift
   done
-  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1 || die "claude CLI not found"
   local max; max=$(python3 -c "import json;print(json.load(open('$R/config/projects.json'))['defaults']['max_concurrent'])" 2>/dev/null || echo 4)
 
   local tasks=()
@@ -517,7 +539,7 @@ PY
 
 # ── remember: file DURABLE knowledge into nathanbot's brain (every harness sees it) ─
 cmd_remember() {
-  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1 || die "claude CLI not found"
   local note="$*"
   [ -z "${note// }" ] && die "usage: nb remember \"<a fact or rule to keep>\""
   printf "${c_b}Filing to nathanbot's brain...${c_0}\n"
@@ -628,8 +650,19 @@ cmd_sync()   {
   # the chat/voice operator must not push to GitHub unattended
   [ -n "${NB_OPERATOR:-}" ] && die "nb sync is disabled for the operator — the owner runs it (or the nightly job does)"
   cd "$R" && git add -A && git commit -qm "${1:-chore: sync nathanbot}" 2>/dev/null
-  git remote get-url origin >/dev/null 2>&1 && git push -q 2>/dev/null && printf "${c_g}synced${c_0}\n" \
-    || printf "${c_y}committed locally (no remote configured)${c_0}\n"
+  # Report WHY, not just "not synced". These used to share one || branch, so an
+  # expired credential, a dead network and a rejected non-fast-forward all
+  # printed "no remote configured" — and the nightly job swallowed the exit code
+  # on top of that, so cross-machine sync could fail silently for weeks.
+  if ! git remote get-url origin >/dev/null 2>&1; then
+    printf "${c_y}committed locally — no remote configured${c_0}\n"
+    return 0
+  fi
+  local err; err=$(git push 2>&1) \
+    && { printf "${c_g}synced${c_0}\n"; return 0; }
+  printf "${c_r}committed locally but PUSH FAILED${c_0} — other machines are not seeing this\n"
+  printf "${c_d}%s${c_0}\n" "$(printf '%s' "$err" | tail -3)"
+  return 1
 }
 
 usage() { awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"; }
@@ -733,7 +766,7 @@ cmd_brief() {
 
 # ── evolve: self-improvement. PROPOSES, never self-applies. ──────────────────
 cmd_evolve() {
-  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1 || die "claude CLI not found"
   local apply=false; [ "${1:-}" = "--apply" ] && apply=true
   # the operator may not trigger self-modification unattended
   [ -n "${NB_OPERATOR:-}" ] && apply=false
@@ -780,6 +813,10 @@ Reversible: git revert HEAD" || printf "${c_d}(nothing applied)${c_0}\n"
 
   printf "${c_b}Analyzing own usage and proposing deeper improvements...${c_0}\n"
 
+  # Runs weekly from launchd, so it must not hold the default toolset. Write IS
+  # needed — this pass creates proposal task files. Edit and Bash are not: the
+  # prompt's own contract is "create tasks, modify nothing", and every piece of
+  # evidence is baked in shell-side below.
   "$CLAUDE" -p "You are nathanbot analyzing ITSELF to propose improvements. Be concrete and evidence-based.
 
 EVIDENCE — read all of these:
@@ -817,14 +854,16 @@ $TASK_STYLE
 
 Propose 2-5 improvements, highest leverage first. Each must cite the specific evidence
 that motivated it. Do NOT modify any existing file — only create proposal tasks.
-Then print a short summary of what you proposed and why." --permission-mode acceptEdits 2>&1 | tail -35
+Then print a short summary of what you proposed and why." \
+    --permission-mode acceptEdits \
+    --allowedTools "Read" "Grep" "Glob" "Write" 2>&1 | tail -35
 
   printf "\n${c_g}proposals created${c_0} — review with 'nb status', they're all needs-decision\n"
 }
 
 # ── scout: find new tools/systems worth adopting ─────────────────────────────
 cmd_scout() {
-  command -v claude >/dev/null 2>&1 || die "claude CLI not found"
+  NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1 || die "claude CLI not found"
   printf "${c_b}Scouting new tools and systems...${c_0}\n"
   "$CLAUDE" -p "Research tools, systems, or techniques the owner should know about.
 

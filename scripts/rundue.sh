@@ -18,6 +18,11 @@
 set -uo pipefail
 R="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Belt to claudew's suspenders. Every calendar plist routes through this file, so
+# a job that shells out to a bare `claude` against the AGENTS.md rule is still
+# covered — and this holds for the plists already on disk, with no regeneration.
+export NB_UNATTENDED=1
+
 name="$1"; hour="$2"; minute="$3"; weekday="$4"; day="$5"; shift 5
 [ "${1:-}" = "--" ] && shift
 

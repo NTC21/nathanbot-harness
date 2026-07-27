@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""nathanbot UI — local server. No build step, no deps beyond stdlib.
-Serves the dashboard and a small JSON API over the real task/memory files.
+"""nathanbot — headless local server. No build step, no deps beyond stdlib.
+A JSON API on :7777 over the real task/memory files. There is no dashboard;
+the clients are the Telegram bridge, the voice daemon, and bin/nb.
 """
 import json, os, re, socket, subprocess, pathlib, http.server, threading, time, urllib.parse
 
@@ -11,7 +12,8 @@ NB = str(R/"bin"/"nb")
 
 import sys
 sys.path.insert(0, str(R/"scripts"/"voice"))
-from prompt import build_operator_prompt  # shared with the voice daemon
+from prompt import (build_operator_prompt, operator_allowed_tools,
+                    operator_denied_tools)  # shared with the voice daemon
 
 
 def _which_claude():
@@ -28,9 +30,11 @@ def _which_claude():
 
 CLAUDE_BIN = _which_claude()
 
-# nb shells out to `claude` via bare `command -v claude`, which only resolves if
-# PATH contains it. Pass a hardened PATH to every nb subprocess so it works even
-# when the server is launched outside the LaunchAgent (which sets PATH itself).
+# Pass a hardened PATH to every nb subprocess so it works when the server is
+# launched outside the LaunchAgent. This was originally a workaround for nb's
+# `command -v claude` gate, which failed under a bare PATH; that gate now asks
+# claudew (NB_CHECK=1) and resolves independently, so this is defence in depth
+# for the rest of nb's shell-outs rather than the thing holding it together.
 _HARDENED_PATH = os.pathsep.join([
     os.path.dirname(CLAUDE_BIN), "/opt/homebrew/bin", "/usr/local/bin",
     "/usr/bin", "/bin", "/usr/sbin", "/sbin",
@@ -74,9 +78,16 @@ def chat_effort():
 
 
 def nb(*args, timeout=600):
-    """Run an nb subcommand with the hardened env; return cleaned stdout+stderr."""
+    """Run an nb subcommand with the hardened env; return cleaned stdout+stderr.
+
+    NB_OPERATOR is set here, not only on /api/chat. Without it, /api/say and
+    /api/run bypassed every fuse the comment on the chat route claims protects
+    them — route_say allows /tidy and passes the remainder through as argv, so a
+    local POST of {"text": "/tidy --apply"} reached `nb tidy --apply` with the
+    guard at bin/nb inert, and that runs rm -rf over dormant node_modules.
+    """
     r = subprocess.run([NB, *args], capture_output=True, text=True,
-                       timeout=timeout, env=NB_ENV)
+                       timeout=timeout, env={**NB_ENV, "NB_OPERATOR": "1"})
     return re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or "")), r.returncode
 
 
@@ -85,59 +96,10 @@ def _strip_ansi(s):
 
 
 # ── operator tool scope ──────────────────────────────────────────────────────
-# The nb subcommands the operator may run. This is an ALLOWLIST on purpose: the
-# previous Bash({NB}:*) wildcard granted all ~56 verbs, including several that
-# should never have been reachable from an unattended run — `perms set` (it could
-# un-gate itself), `sync` (push), `run` (spawns further sessions with their own
-# tool scope), `server`/`jarvis`/`telegram` (long-lived processes), and
-# `evolve|learn|tidy|groom --apply` (self-modification). A wildcard also silently
-# grants every verb added in the future, which is how those five crept in.
-OPERATOR_NB_VERBS = [
-    # capture + read-only status
-    "add", "inbox", "next", "status", "brief", "watch", "audit",
-    # knowledge in / out — the whole point of the operator
-    "remember", "feedback", "wiki", "study", "news", "activity",
-    # planning + task hygiene (non-destructive forms)
-    "triage", "plan", "done", "decide",
-    # calendar staging — gcalendar.py is separately NB_OPERATOR-fused, so this
-    # can only stage a [[CAL_BLOCK]] marker for the owner to approve
-    "cal",
-]
-# NOT granted, deliberately: "perms" — the pattern Bash(nb perms:*) would also
-# match "nb perms set email.send always", so granting read access to its own
-# permissions also grants the ability to rewrite them. There is no way to split
-# show from set at the flag level, so the whole verb stays out. The operator does
-# not need to introspect its permissions; it needs to obey them.
-
-# Defense in depth. The real path boundary is the PreToolUse guard in
-# ~/.claude/hooks/, which canonicalizes with fcntl(F_GETPATH) so firmlink
-# (/System/Volumes/Data/...) and case-variant spellings cannot slip past. These
-# flags are the second layer, and cover the highest-value targets only.
-def _operator_denied_tools():
-    h = os.path.expanduser("~")
-    # Derive from the guard's own list rather than restating it. Two reasons:
-    # a second hand-maintained copy drifts, and this file is shipped in the
-    # public template — hardcoding a machine's vault directory names here would
-    # publish the layout that claude-hooks/deny-local.txt exists to keep private.
-    # nb_guard loads deny-local.txt itself, so per-machine additions flow through.
-    try:
-        sys.path.insert(0, str(R / "claude-hooks"))
-        from nb_guard import DENY_ALL as roots          # noqa: E402
-    except Exception:
-        roots = [f"{h}/.secrets", f"{h}/.ssh", f"{h}/.aws", f"{h}/.gnupg",
-                 f"{h}/.config/gh", f"{h}/Library/Keychains", f"{h}/Library/Cookies"]
-    out = []
-    for r in roots:
-        for tool in ("Read", "Grep", "Glob", "Edit", "Write"):
-            out.append(f"{tool}({r}/**)")
-    # never let an unattended run rewrite its own rails
-    for p in (f"{h}/.claude/settings.json", f"{h}/.claude/hooks",
-              f"{R}/config/permissions.json", f"{R}/prompts"):
-        out += [f"Edit({p}/**)", f"Write({p}/**)", f"Edit({p})", f"Write({p})"]
-    return out
-
-
-OPERATOR_DENIED_TOOLS = _operator_denied_tools()
+# Moved to scripts/voice/prompt.py so the chat and voice channels share ONE
+# definition. They had already drifted: this file enumerated the nb verbs and
+# derived the credential denylist from nb_guard, while jarvis.py kept a
+# Bash(<nb>:*) wildcard and denied only ~/.secrets.
 
 
 # ── operator-drafts-then-the owner-approves email send ──────────────────────────
@@ -154,7 +116,12 @@ _SEND_MARKER = re.compile(r"\[\[\s*SEND_DRAFT(?:\s+to=([^\]\s]+))?\s*\]\]", re.I
 def _gmail(account, *args, timeout=30, drop_operator=False):
     env = dict(NB_ENV)
     if drop_operator:
-        env.pop("NB_OPERATOR", None)   # the owner-approved action, not the operator's
+        # BOTH. This is the owner's own act, redeemed via a single-use token he
+        # approved — not the operator's. gmail.py and gcalendar.py refuse on
+        # either flag, so dropping only one would leave the approve button
+        # broken if the server were ever started from a claudew session.
+        env.pop("NB_OPERATOR", None)
+        env.pop("NB_UNATTENDED", None)
     r = subprocess.run(["python3", str(R/"scripts"/"google"/"gmail.py"),
                         "--account", account, *args],
                        capture_output=True, text=True, timeout=timeout, env=env)
@@ -208,7 +175,12 @@ _CAL_MARKER = re.compile(
 def _gcal(*args, timeout=30, drop_operator=False):
     env = dict(NB_ENV)
     if drop_operator:
-        env.pop("NB_OPERATOR", None)   # the owner-approved action, not the operator's
+        # BOTH. This is the owner's own act, redeemed via a single-use token he
+        # approved — not the operator's. gmail.py and gcalendar.py refuse on
+        # either flag, so dropping only one would leave the approve button
+        # broken if the server were ever started from a claudew session.
+        env.pop("NB_OPERATOR", None)
+        env.pop("NB_UNATTENDED", None)
     r = subprocess.run(["python3", str(R/"scripts"/"google"/"gcalendar.py"), *args],
                        capture_output=True, text=True, timeout=timeout, env=env)
     return r.returncode, _strip_ansi(r.stdout).strip(), _strip_ansi(r.stderr).strip()
@@ -377,7 +349,7 @@ def _port_up(port, timeout=0.3):
 
 
 def _systems():
-    """Health of the moving parts: launchd jobs, voice, local brain, claude."""
+    """Health of the moving parts: launchd jobs, voice, claude."""
     jobs = {}
     try:
         r = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=5)
@@ -393,12 +365,17 @@ def _systems():
         lp = logs/f"{name}.log"
         meta["last_run"] = int(lp.stat().st_mtime) if lp.exists() else None
 
-    capped = False   # a claude-fallback event in the last hour = running on the local brain
+    # a claude-capped event in the last hour = the subscription is rate-limited.
+    # This watched "claude-fallback" until 2026-07-26 — the token bin/claudew
+    # wrote back when it still had an Ollama fallback. claudew has written
+    # "claude-capped" since that was removed, so this could never fire and the
+    # one signal that says "your brain is unavailable" read ok permanently.
+    capped = False
     try:
         tail = (R/"tasks"/".telemetry.jsonl").read_text().splitlines()[-200:]
         cutoff = time.time() - 3600
         for line in tail:
-            if '"claude-fallback"' in line:
+            if '"claude-capped"' in line:
                 ev = json.loads(line)
                 ts = time.mktime(time.strptime(ev["ts"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
                 if ts > cutoff:
@@ -549,8 +526,13 @@ class H(http.server.SimpleHTTPRequestHandler):
                     return self._json({"ok": False, "error": "forbidden"}, 403)
                 return self._json(state())
             if urllib.parse.urlparse(self.path).path == "/api/miclog":
-                # mic diagnostics from the client (Dock app can't show devtools) —
-                # appends one line to tasks/logs/mic.log so failures are readable.
+                # mic diagnostics from the client — appends one line to
+                # tasks/logs/mic.log so failures are readable.
+                # The Host/Origin check is not optional here even though this only
+                # writes a log: it was the one endpoint without it, so any page
+                # the owner visited could <img src> arbitrary lines into that file.
+                if not self._local_ok():
+                    return self._json({"ok": False, "error": "forbidden"}, 403)
                 import time as _t
                 q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 msg = (q.get("m", [""])[0])[:400]
@@ -728,19 +710,11 @@ class H(http.server.SimpleHTTPRequestHandler):
                     # only when set to a level the CLI accepts (see chat_effort)
                     *(["--effort", chat_effort()] if chat_effort() else []),
                     "--permission-mode", "acceptEdits",
-                    "--allowedTools",
-                    "Read", "Grep", "Glob", "Edit", "Write", "WebSearch", "WebFetch",
-                    "Task",   # dispatch to specialist subagents (.claude/agents/*)
-                    # Enumerated, NOT Bash({NB}:*). The wildcard granted every one of
-                    # ~56 subcommands — including `perms set` (self-un-gating), `sync`
-                    # (push), `run` (spawns unscoped sessions), and `server`/`jarvis`
-                    # — and would silently grant each new verb added in future.
-                    *[f"Bash({NB} {v}:*)" for v in OPERATOR_NB_VERBS],
-                    f"Bash(python3 {R}/scripts/google/gmail.py:*)",
-                    # solo events/reminders only — attendee invites + RSVPs
-                    # hard-refuse inside gcalendar.py under NB_OPERATOR
-                    f"Bash(python3 {R}/scripts/google/gcalendar.py:*)",
-                    "--disallowedTools", *OPERATOR_DENIED_TOOLS]
+                    # Both lists live in scripts/voice/prompt.py, shared with the
+                    # voice daemon so the two channels cannot diverge. Enumerated
+                    # nb verbs, never Bash(<nb>:*) — see the note there.
+                    "--allowedTools", *operator_allowed_tools(str(R)),
+                    "--disallowedTools", *operator_denied_tools(str(R))]
             try:
                 # cwd in the repo so the operator discovers .claude/agents/* (the specialists)
                 r = subprocess.run(argv, capture_output=True, text=True, timeout=900,

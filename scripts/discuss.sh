@@ -18,7 +18,12 @@ if [ "${1:-}" = "--review" ]; then
 fi
 
 TOPIC="${*:-}"
-command -v claude >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
+# This one is INTERACTIVE, so it execs the real binary rather than going through
+# claudew — claudew buffers stdout/stderr into temp files and prints at exit,
+# which is right for `-p` and fatal for a conversation. Use claudew only to
+# resolve the path, so there is still exactly one resolver.
+CLAUDE_BIN="$(NB_CHECK=1 "$R/bin/claudew")" \
+  || { echo "claude CLI not found" >&2; exit 1; }
 
 PROMPT="You are interviewing the owner to build up nathanbot's memory of him. This is a CONVERSATION,
 not a form. Your job is to learn things worth keeping.
@@ -61,4 +66,9 @@ RULES:
   see $R/config/permissions.json.
 - Be terse. He runs a compression prompt and dislikes filler."
 
-exec claude --append-system-prompt "$PROMPT" "${TOPIC:-Let's talk. Read my memory first, then start.}"
+# The default is built OUTSIDE the quotes on purpose. bash treats a single quote
+# inside "${var:-word}" as a real quote character, so the apostrophe in the old
+# default ("Let's talk...") opened a string that never closed — `bash -n` failed
+# and `nb discuss` had never once run.
+: "${TOPIC:=Read my memory first, then start a conversation with me.}"
+exec "$CLAUDE_BIN" --append-system-prompt "$PROMPT" "$TOPIC"

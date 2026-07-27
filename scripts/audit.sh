@@ -39,14 +39,17 @@ for f in wiki/pages/*.md; do
 done
 [ "$warn" -eq 0 ] && ok "all pages linked"
 
-hdr "5. Stale wiki pages (updated: > 90 days)"
+hdr "5. Stale wiki pages (updated: > 30 days)"
 for f in wiki/pages/*.md; do
   [ -e "$f" ] || continue
   d=$(grep -m1 '^updated:' "$f" | awk '{print $2}')
   [ -z "$d" ] && { bad "$(basename "$f") missing 'updated:' frontmatter"; continue; }
   ts=$(date -j -f "%Y-%m-%d" "$d" +%s 2>/dev/null) || continue
   days=$(( (TODAY - ts) / 86400 ))
-  [ "$days" -gt 90 ] && bad "$(basename "$f" .md) not updated in $days days"
+  # 30, not 90. Nine of nineteen pages had `updated:` behind their real last-edit
+  # date, so at 90 this could not fire — a check with a threshold longer than the
+  # drift it measures is decoration.
+  [ "$days" -gt 30 ] && bad "$(basename "$f" .md) not updated in $days days"
 done
 
 hdr "6. Index coverage"
@@ -63,7 +66,9 @@ else
   d=$(basename "$last" .md)
   ts=$(date -j -f "%Y-%m-%d" "$d" +%s 2>/dev/null) && {
     days=$(( (TODAY - ts) / 86400 ))
-    [ "$days" -gt 14 ] && bad "last session note is $days days old ($last)" || ok "last session note $days days old"
+    # 3, not 14. AGENTS.md requires a note per meaningful session; exactly ONE has
+    # ever been written, and at 14 days this printed a green tick over that.
+    [ "$days" -gt 3 ] && bad "last session note is $days days old ($last) — AGENTS.md wants one per session" || ok "last session note $days days old"
   }
 fi
 
@@ -102,7 +107,9 @@ hdr "11. Wiki hygiene"
 vaults=$(find . -name .obsidian -not -path '*/node_modules/*' | wc -l | tr -d ' ')
 [ "$vaults" = 1 ] && ok "one Obsidian vault (wiki/)" \
   || bad "$vaults Obsidian vaults on this tree — nested vaults split the graph; keep only wiki/"
-wikiprobs=$(python3 scripts/wiki_index.py --lint 2>/dev/null | grep -c ':' || echo '?')
+# grep -c prints 0 AND exits 1 when there are no matches, so `|| echo '?'` used to
+# emit both — "0\n?" — and the clean case rendered as a warning reading "⚠️ 0 ?".
+wikiprobs=$(python3 scripts/wiki_index.py --lint 2>/dev/null | grep -c ':' || true)
 [ "$wikiprobs" = 0 ] && ok "wiki clean (schema, links, index in sync)" \
   || bad "$wikiprobs wiki problem(s) — run 'nb wiki lint'"
 

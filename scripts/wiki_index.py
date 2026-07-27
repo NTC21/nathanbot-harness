@@ -114,6 +114,12 @@ def render(pages: list[dict]) -> str:
 def lint(pages: list[dict]) -> list[str]:
     problems = []
     slugs = {p["slug"] for p in pages}
+    # Attachments are legitimate wikilink targets. wiki/raw/ is excluded from the
+    # page scan (they are not pages), but excluding them from the LINK targets too
+    # reported a pasted screenshot that exists on disk as a dead link — a
+    # permanent false positive, which trains you to skim the lint output.
+    slugs |= {f.name for f in (WIKI / "raw").glob("*") if f.is_file()}
+    slugs |= {f.stem for f in (WIKI / "raw").glob("*") if f.is_file()}
     # pages living at the wiki root are addressable too (task-style, storage-policy, ...)
     slugs |= {p.stem for p in WIKI.glob("*.md")}
     slugs |= {p.stem for p in (WIKI / "daily").glob("*.md")}

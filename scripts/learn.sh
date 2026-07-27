@@ -72,8 +72,19 @@ print("COMMAND USE  (%d records)" % len(T))
 if T:
     c = collections.Counter(t.get("cmd") for t in T)
     print("  used:", ", ".join(f"{k}={v}" for k, v in c.most_common()))
-    allcmds = {"add","triage","next","status","plan","run","done","decide","brief",
-               "evolve","scout","tidy","audit","groom","discuss","mail","project","server"}
+    # Read the real dispatch table instead of a hardcoded list. The literal set
+    # here listed 18 verbs while bin/nb dispatches 59, so "NEVER used" was
+    # computed against a universe missing watch, news, study, wiki, remember,
+    # feedback, cal, learn, stale, sync, schedule, profile, perms and more —
+    # i.e. the learn pass reasoned about usage from a stale map of itself.
+    sys.path.insert(0, os.path.join(R, "scripts"))
+    try:
+        from stale import nb_verbs
+        allcmds = nb_verbs(canonical_only=True)
+    except Exception:
+        allcmds = set()
+    # aliases and internals are not things the owner "chooses" to use
+    allcmds -= {"help", "_logdecision"}
     unused = sorted(allcmds - set(c))
     print("  NEVER used:", ", ".join(unused) or "none")
 
@@ -101,7 +112,7 @@ if [ "${1:-}" = "--show" ]; then
   exit 0
 fi
 
-command -v claude >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
+NB_CHECK=1 "$R/bin/claudew" >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
 EV="$(evidence)"
 
 # ── safe-tier auto-apply: encode EXPLICIT feedback into the model-of-the owner pages ──
@@ -167,6 +178,7 @@ OUTPUT:
 - End with a single question that would most improve the model of him.
 
 Be terse. Cite the specific evidence behind each claim — 'you dropped 3 of 4 P5 tasks' beats
-'you seem to dislike low-priority work.'" 2>&1 | tail -60
+'you seem to dislike low-priority work.'" \
+  --allowedTools "Read" "Grep" "Glob" 2>&1 | tail -60
 
 printf "\n%sProposals only — nothing written.%s Approve edits in chat or run again after more usage.\n" "$D" "$X"

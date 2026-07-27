@@ -29,6 +29,16 @@ def permission(path):
     return d.get("level", "ask") if isinstance(d, dict) else "ask"
 
 
+def unattended():
+    """True when nobody is approving actions one by one.
+
+    Mirrors claude-hooks/nb_guard.is_unattended(). Not imported, because this
+    script must keep working if the hooks are not installed — but the two must
+    stay in step, so change both together.
+    """
+    return bool(os.environ.get("NB_OPERATOR") or os.environ.get("NB_UNATTENDED"))
+
+
 def require(path, what):
     """Refuse unless the permission is 'always'."""
     lvl = permission(path)
@@ -85,6 +95,13 @@ def _body(payload):
 
 
 def cmd_read(a):
+    # --approved means "the owner said yes in chat". Only he can say that, so an
+    # unattended run may not mint it — the flag is one token in a command the
+    # model writes itself, and the chat operator holds both a gmail wildcard and
+    # WebFetch, which is a read-any-body-then-exfiltrate path.
+    if a.approved and unattended():
+        sys.exit("\n❌ REFUSED — --approved is the owner's approval to give, not the "
+                 "operator's.\n   Ask him in chat and let him run the read himself.")
     if not a.approved:
         require("email.read_bodies",
                 f"Reading the full body of message {a.id}. Subjects/metadata are always allowed; bodies are not.")
@@ -136,10 +153,28 @@ def cmd_draft(a):
 def cmd_send(a):
     # HARD FUSE: the chat/voice operator can never send — --yes is a restatement the
     # model could mint itself. Sending is the owner's act, from his own shell.
-    if os.environ.get("NB_OPERATOR"):
+    if unattended():
         sys.exit("\n❌ REFUSED — sending email is disabled for the operator.\n"
                  "   The draft is ready; the owner sends it himself:  nb mail --account "
                  f"{a.account} send {a.id} --yes {a.account}")
+
+    # The account must be marked connected in the identity registry. Until now
+    # only 'personal' could send because the other three have no token on disk —
+    # an absence, not a rule. ~/.secrets/hsnc/ already exists, so one `nb mail
+    # login hsnc` would have silently made an unauthorized business identity
+    # sendable. AGENTS.md calls a wrong sending identity unrecoverable.
+    acct = auth.accounts_cfg().get(a.account, {})
+    if not acct.get("connected"):
+        sys.exit(f"\n❌ REFUSED — '{a.account}' is not authorized to send.\n"
+                 f"   config/accounts.json: connected = {acct.get('connected')!r}\n"
+                 f"   {acct.get('status', 'No status recorded.')}\n"
+                 f"   Authorize it deliberately before sending as this identity.")
+
+    # 'never' refuses outright. 'ask' is satisfied by the two checks around this
+    # one — the unattended fuse above (only a human reaches here) and the --yes
+    # account restatement below — NOT by require(), which exits on 'ask' and
+    # would fence the owner out of his own shell and break the Telegram approve
+    # button, whose single-use token runs this without NB_OPERATOR.
     if permission("email.send") == "never":
         require("email.send", "Sending is disabled in config/permissions.json.")
     # the account must be restated — a bare --yes is too easy to add reflexively
