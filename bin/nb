@@ -7,10 +7,6 @@
 #   nb next                what to work on now
 #   nb status              what's open / in flight / blocked
 #   nb plan "<goal>"       decompose a big goal into tasks
-#   nb run [--dry-run]     execute ready tasks (parallel, isolated per project)
-#   nb run --auto          unattended-safe subset only: auto-merge projects in
-#                          NB_AUTO_PROJECTS (default: nathanbot), skip 'auto: false'
-#   nb run --only <id>     run just one task (witnessed first runs)
 #   nb done <id>           mark a task complete
 #   nb decide [id]         resolve needs-decision items (approve/defer/drop)
 #   nb groom [--apply]     archive stale tasks so the queue does not rot
@@ -89,7 +85,10 @@ die() { printf "${c_r}%s${c_0}\n" "$1" >&2; exit 1; }
 
 next_id() {
   local n=0 f
-  for f in "$OPEN"/*.md "$DONE"/*.md; do
+  # ARCHIVE too. Scanning only open/ + done/ meant an id was reused the moment
+  # groom archived its original holder — 8 ids are currently duplicated, and
+  # t-0027 points at two unrelated tasks, one of which a wiki page still cites.
+  for f in "$OPEN"/*.md "$DONE"/*.md "$R/tasks/archive"/*.md; do
     [ -e "$f" ] || continue
     local i="${f##*/t-}"; i="${i%%-*}"; i="${i%.md}"
     # 10# forces base-10: zero-padded ids like 0008 are OCTAL in bash arithmetic otherwise
@@ -407,110 +406,32 @@ Report the plan as a numbered list." --permission-mode acceptEdits 2>&1 | tail -
 
 # ── run: execute ready tasks, isolated per project ───────────────────────────
 cmd_run() {
-  # the chat operator may capture/plan/report, but must NOT execute against real
-  # project code unattended — that's the owner's explicit call.
-  [ -n "${NB_OPERATOR:-}" ] && die "nb run is disabled for the chat operator — run it from the Tasks tab or a terminal."
-  local dry=false autorun=false onlyid=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --dry-run) dry=true ;;
-      --auto)    autorun=true ;;
-      --only)    onlyid="$2"; shift ;;
-    esac
-    shift
-  done
-  NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1 || die "claude CLI not found"
-  local max; max=$(python3 -c "import json;print(json.load(open('$R/config/projects.json'))['defaults']['max_concurrent'])" 2>/dev/null || echo 4)
-
-  local tasks=()
-  for f in "$OPEN"/*.md; do
-    [ -e "$f" ] || continue
-    [ "$(_fm "$f" status)" = "ready" ] || continue
-    [ -n "$onlyid" ] && { case "$f" in *"$onlyid"*) ;; *) continue ;; esac; }
-    tasks+=("$f")
-  done
-  [ ${#tasks[@]} -eq 0 ] && { printf "${c_d}no ready tasks%s${c_0}\n" "${onlyid:+ matching '$onlyid'}"; return 0; }
-
-  printf "${c_b}Running %s task(s), max %s concurrent${c_0}\n" "${#tasks[@]}" "$max"
-  local running=0
-  for f in "${tasks[@]}"; do
-    local id proj auto path
-    id=$(_fm "$f" id); proj=$(_fm "$f" project)
-    # project comes from task frontmatter (semi-trusted) — pass via argv, never
-    # interpolate into the Python source (code-exec risk)
-    auto=$(python3 -c "
-import json,sys
-c=json.load(open(sys.argv[1]))
-p=c['projects'].get(sys.argv[2])
-print(p['autonomy'] if p else c['defaults']['autonomy'])" "$R/config/projects.json" "$proj" 2>/dev/null || echo auto-pr)
-    path=$(python3 -c "
-import json,os,sys
-c=json.load(open(sys.argv[1]))
-p=c['projects'].get(sys.argv[2])
-print(os.path.expandvars(p['path']).replace('\${CODE_ROOT}', os.path.expanduser('~/Projects')) if p else '')" "$R/config/projects.json" "$proj" 2>/dev/null)
-
-    # --auto: unattended safe subset. Runs ONLY tasks whose project is 'auto-merge'
-    # (the owner's own "AI may merge without asking" tier) AND in the allowlist
-    # (NB_AUTO_PROJECTS, default nathanbot only) AND not opted out with 'auto: false'.
-    # Everything else — client work, products at auto-pr, review-required — is left
-    # for a manual, witnessed 'nb run'.
-    if $autorun; then
-      local allow; allow=$(echo "${NB_AUTO_PROJECTS:-nathanbot}" | tr ',' ' ')
-      if [ "$auto" != "auto-merge" ] || [ "$(_fm "$f" auto)" = "false" ] || ! printf ' %s ' "$allow" | grep -q " $proj "; then
-        printf "  ${c_d}skip — not auto-eligible (%s/%s)${c_0} %s\n" "$proj" "$auto" "$id"
-        continue
-      fi
-    fi
-
-    printf "  %-10s [%s] ${c_d}%s${c_0} → %s\n" "$id" "$proj" "$auto" "$(_fm "$f" title | sed 's/^\"//;s/\"$//')"
-    $dry && continue
-
-    ( CODE_ROOT="$HOME/Projects" \
-      NB_JOB=run "$CLAUDE" -p "$(cat "$f")
-
-You are executing ONE task for the owner.
-
-PROJECT: $proj   PATH: $path   AUTONOMY: $auto
-
-Read first: $R/shared-memory/OVERVIEW.md, $R/$(_workspace_for "$(_fm "$f" domain)")/MEMORY.md,
-and that project's own CLAUDE.md if present.
-
-AUTONOMY RULES — these are absolute:
-- review-required : implement, then STOP. Do not push. Report what you'd push.
-- auto-pr         : implement, open a PR. Never merge.
-- auto-merge      : implement, verify, may merge to main if checks pass.
-Never act outside $path. Never touch another project.
-
-When finished, append 2-5 terse summary lines to
-$R/$(_workspace_for "$(_fm "$f" domain)")/memory/$(date +%F).md (create it if missing).
-That is the correct workspace for this task's domain ($(_fm "$f" domain)) — writing there
-is how the per-domain memory split actually fills up. See $R/AGENTS.md for the contract." \
-      --permission-mode acceptEdits > "$R/tasks/.log-$id.txt" 2>&1
-      rc=$?
-      if [ "$rc" -eq 0 ]; then
-        sed -i '' 's/^status: ready/status: done/' "$f" 2>/dev/null
-        _log_decision "$f" run-ok "rc=0"          # outcome -> learning signal
-        mv "$f" "$DONE/" 2>/dev/null
-      else
-        # FAILED: keep the task open and mark it, never file as complete
-        sed -i '' 's/^status: ready/status: failed/' "$f" 2>/dev/null
-        _log_decision "$f" run-fail "rc=$rc"       # outcome -> learning signal
-        printf '\nlast-run: FAILED rc=%s see tasks/.log-%s.txt\n' "$rc" "$id" >> "$f"
-      fi
-    ) &
-    running=$((running+1))
-    # `wait -n` needs bash 4.3+; system /bin/bash is 3.2 — fall back to waiting the batch
-    if [ "$running" -ge "$max" ]; then
-      if [ "${BASH_VERSINFO[0]}" -ge 5 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 3 ]; }; then
-        wait -n; running=$((running-1))
-      else
-        wait; running=0
-      fi
-    fi
-  done
-  $dry && { printf "${c_d}(dry run — nothing executed)${c_0}\n"; return 0; }
-  wait
-  printf "${c_g}run complete${c_0} — logs in tasks/.log-*.txt\n"
+  # RETIRED 2026-07-27. Unattended task execution against real project code is a
+  # capability that was built, never used, and has now been overtaken.
+  #
+  # The evidence, from the system's own records: no task has ever reached status
+  # `ready`, so this function has never executed a single task. `nb next` answered
+  # "nothing ready" ten times running. And on 2026-07-27 `nb evolve` proposed four
+  # decisions; two were resolved in conversation the same day without the queue
+  # being involved at all. Work happens in a session, not in a queue.
+  #
+  # It also got more dangerous while sitting unused: claudew now exports
+  # NB_UNATTENDED, so a task executing here is fenced out of the very rails a
+  # self-improvement task would need to touch — it would fail confusingly rather
+  # than do anything useful.
+  #
+  # CAPTURE STAYS. `nb add` -> inbox -> `nb review` -> `nb decide` all still work;
+  # that half earns its keep. Only autonomous execution is gone.
+  #
+  # To bring it back: git show 8e2243e:bin/nb had the full parallel runner
+  # (per-project isolation, --auto/--only/--dry-run, background write-back).
+  printf "${c_y}nb run is retired.${c_0}\n"
+  printf "  It never ran a task — nothing ever reached status 'ready' — and work\n"
+  printf "  happens in a session, not a queue.\n\n"
+  printf "  Capture still works: ${c_b}nb add${c_0} -> ${c_b}nb review${c_0} -> ${c_b}nb decide${c_0}\n"
+  printf "  To act on a task, open it and work it in a Claude Code session.\n"
+  printf "  ${c_d}History: git show 8e2243e:bin/nb${c_0}\n"
+  return 1
 }
 
 cmd_done() {
@@ -758,6 +679,14 @@ cmd_brief() {
     # (a file deleted elsewhere, a tool uninstalled). This is that second net.
     local st; st=$(python3 "$R/scripts/stale.py" --quiet 2>/dev/null | grep -cE '^\s{4}\S+:[0-9]+')
     [ "${st:-0}" -gt 0 ] && printf -- "- **%s stale memory reference(s)** — run \`nb stale\`; a session will act on these\n" "$st"
+    # The guards protect credentials and the rails, and they are only ever run by
+    # hand — the pre-push hook covers a push, this covers the days without one.
+    # A suite that nobody runs cannot fail, which reads as evidence that it passed.
+    local gt; gt=$(python3 "$R/claude-hooks/test_guards.py" 2>&1 | tail -1)
+    case "$gt" in
+      *"0 failing") : ;;
+      *) printf -- "- **GUARD SUITE FAILING** (%s) — credentials/rails may be unprotected\n" "$gt" ;;
+    esac
     local free; free=$(df -h / | tail -1 | awk '{print $4}')
     printf -- "- disk free: %s\n" "$free"
   } > "$out"

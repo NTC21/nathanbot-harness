@@ -56,9 +56,7 @@ def digest(day):
     """
     import datetime
     day = day or datetime.date.today().isoformat()
-    start = datetime.datetime.fromisoformat(day)
-    lo = start.timestamp()
-    hi = lo + 86400
+    lo = datetime.datetime.fromisoformat(day).timestamp()
     labels = T.trace_labels()
     by_project = defaultdict(list)
 
@@ -95,7 +93,6 @@ def digest(day):
             for f in s["files"]:
                 print(f"    edited: {f}")
         # commits in that repo, that day — the other half of "what happened"
-        cwd = next((c for c in [proj] if os.path.isdir(c)), None)
         for base in (os.path.expanduser(f"~/Projects/{proj}"), proj):
             if os.path.isdir(os.path.join(base, ".git")):
                 try:

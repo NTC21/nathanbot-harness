@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# nathanbot pre-push — run the tests that otherwise only run when someone types
+# the command.
+#
+# The guards, the audit and the staleness check are all real and all thorough,
+# and every one of them fires only on demand. That is the same shape as the bug
+# this repo spent 2026-07-27 removing: two PreToolUse hooks that were installed,
+# looked healthy, and had never blocked anything in their entire existence. A
+# test suite nobody runs is a suite that cannot fail, which is worse than none —
+# it reads as evidence.
+#
+# BLOCKS, unlike pre-commit. The difference is deliberate:
+#   pre-commit warns  — a false positive mid-flow gets the hook deleted, and a
+#                       deleted hook catches nothing.
+#   pre-push  blocks  — a push is the moment broken code leaves this machine and
+#                       reaches the public template. That is worth stopping for,
+#                       and it is rare enough that a block is not friction.
+#
+# Escape hatch: git push --no-verify. Deliberately not wired to an env var —
+# skipping should be a conscious act typed at the keyboard.
+#
+# Install:  scripts/hooks/install.sh
+R="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$R" || exit 0
+Y=$'\033[33m'; G=$'\033[32m'; R_=$'\033[31m'; D=$'\033[2m'; X=$'\033[0m'
+fail=0
+
+say() { printf '  %s\n' "$1"; }
+
+# 1. syntax — cheapest, catches the most embarrassing breakage
+for f in $(git ls-files '*.sh') bin/nb bin/claudew; do
+  [ -f "$f" ] || continue
+  bash -n "$f" 2>/dev/null || { say "${R_}✗ bash syntax: $f${X}"; fail=1; }
+done
+for f in $(git ls-files '*.py'); do
+  [ -f "$f" ] || continue
+  python3 -m py_compile "$f" 2>/dev/null || { say "${R_}✗ python syntax: $f${X}"; fail=1; }
+done
+
+# 2. the guards. These are the ones that protect credentials and the rails, so a
+#    regression here is the one that actually matters.
+if [ -f claude-hooks/test_guards.py ]; then
+  out=$(python3 claude-hooks/test_guards.py 2>&1)
+  if printf '%s' "$out" | grep -q '0 failing'; then
+    say "${G}✓${X} guards $(printf '%s' "$out" | tail -1)"
+  else
+    say "${R_}✗ guard suite FAILING${X}"
+    printf '%s\n' "$out" | grep FAIL | sed 's/^/    /'
+    fail=1
+  fi
+fi
+
+# 3. memory drift — warn only. It is a claim about reality, not a broken build,
+#    and blocking a push on it would train the --no-verify reflex.
+drift=$(python3 scripts/stale.py --quiet 2>/dev/null)
+[ -n "$drift" ] && {
+  say "${Y}⚠ memory drift (not blocking)${X}"
+  printf '%s\n' "$drift" | sed 's/^/    /'
+}
+
+if [ "$fail" -ne 0 ]; then
+  printf '\n%s✗ push blocked — fix the above, or: git push --no-verify%s\n\n' "$R_" "$X"
+  exit 1
+fi
+printf '  %spre-push checks passed%s\n' "$D" "$X"
+exit 0

@@ -7,7 +7,7 @@ set -euo pipefail
 R="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$R"
 
-for h in pre-commit; do
+for h in pre-commit pre-push; do
   src="$R/scripts/hooks/$h"
   dst="$R/.git/hooks/$h"
   [ -f "$src" ] || continue
