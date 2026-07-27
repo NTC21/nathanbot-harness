@@ -71,4 +71,13 @@ RULES:
 # default ("Let's talk...") opened a string that never closed — `bash -n` failed
 # and `nb discuss` had never once run.
 : "${TOPIC:=Read my memory first, then start a conversation with me.}"
-exec "$CLAUDE_BIN" --append-system-prompt "$PROMPT" "$TOPIC"
+
+# This path bypasses claudew on purpose (claudew buffers stdout, fatal for a
+# conversation), so it traces itself. Only a start line — we exec — which is
+# enough: the trace carries the job label, and everything else (tokens, tools,
+# duration, model) is read from the transcript by session id.
+SID="$(/usr/bin/uuidgen 2>/dev/null | tr 'A-Z' 'a-z')"
+[ -n "$SID" ] && printf '{"ts":"%s","ev":"start","session":"%s","job":"discuss","cwd":"%s","rc":null,"dur_s":null}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SID" "$PWD" >> "$R/tasks/.traces.jsonl" 2>/dev/null || true
+
+exec "$CLAUDE_BIN" ${SID:+--session-id "$SID"} --append-system-prompt "$PROMPT" "$TOPIC"

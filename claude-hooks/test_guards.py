@@ -78,8 +78,19 @@ def _child_sees_flag(argv, extra_env=None):
 
 
 def claudew_flag():
-    return _child_sees_flag([os.path.join(NB, "bin", "claudew"), "NB_UNATTENDED"],
-                            {"NB_CLAUDE_BIN": "/usr/bin/printenv"})
+    """claudew now injects --session-id, so the stand-in binary must ignore argv.
+    printenv used to work as the shim and stopped the moment the flag was added —
+    the suite catching that is the point."""
+    import tempfile
+    fd, shim = tempfile.mkstemp(suffix=".sh")
+    with os.fdopen(fd, "w") as fh:
+        fh.write("#!/bin/sh\nprintenv NB_UNATTENDED\n")
+    os.chmod(shim, 0o755)
+    try:
+        return _child_sees_flag([os.path.join(NB, "bin", "claudew"), "-p", "x"],
+                                {"NB_CLAUDE_BIN": shim})
+    finally:
+        os.unlink(shim)
 
 
 def rundue_flag():
@@ -128,6 +139,9 @@ CASES = [
     ("owner edits his own guards",          f("Write", f"{NB}/claude-hooks/nb_guard.py"), False),
     ("owner edits AGENTS.md",               f("Write", f"{NB}/AGENTS.md"), False),
     ("reading the guard is fine",           f("Read", f"{H}/.claude/hooks/nb_guard.py", True), False),
+    ("rewrite the repo's Claude settings",  f("Write", f"{NB}/.claude/settings.json", True), True),
+    ("rewrite a specialist agent",          f("Write", f"{NB}/.claude/agents/research.md", True), True),
+    ("owner edits his own agents",          f("Write", f"{NB}/.claude/agents/research.md"), False),
 
     ("UNATTENDED — the scheduled-job tier, with no NB_OPERATOR", None, None),
     ("scheduled job rewrites permissions",  f("Write", f"{NB}/config/permissions.json", unattended=True), True),

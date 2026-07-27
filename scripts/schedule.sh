@@ -85,6 +85,9 @@ case "${1:-install}" in
     echo "Installing nathanbot scheduled jobs..."
     mkjob brief  7  30 ""                              "brief --quiet --deliver --speak"
     mkjob digest 22  0 ""                              "digest"
+    # 22:20 — after digest (22:00) so the day's journal is already folded in,
+    # before sync (22:45) so the note rides the same night's push.
+    mkjob writeback 22 20 ""                           "writeback"
     mkjob sync   22 45 ""                              "sync"
     mkjob tidy   9   0 "    <key>Weekday</key><integer>0</integer>" "tidy"          0
     mkjob evolve 8   0 "    <key>Weekday</key><integer>1</integer>" "evolve --apply" 1
@@ -122,6 +125,7 @@ EOF
     echo "  evolve  Mondays 08:00    (--apply: auto-fixes the safe tier, then proposes)"
     echo "  learn   Mondays 08:30    (--apply: model-of-the owner edits from explicit feedback)"
     echo "  groom   Sundays 09:30    (--apply: archives stale tasks)"
+    echo "  wrback  daily 22:20      (day's agent activity -> a dated session note)"
     echo "  sync    daily 22:45      (commit + push THIS repo)"
     echo "  scout   1st of month     (new tools -> wiki pages)"
     echo
@@ -255,7 +259,7 @@ EOF
     # server and skhd are installed by hand (no generator in this repo), so they
     # survived `remove` and kept running. ccr dropped — nothing ever installed it.
     for n in brief digest sync watch tidy evolve scout groom learn jarvis voicebox \
-             telegram nudge activity news server skhd; do
+             telegram nudge activity news writeback server skhd; do
       p="$LA/$PREFIX.$n.plist"
       # || true: under set -e a plist that exists but isn't loaded must not abort the loop
       [ -e "$p" ] && { launchctl unload "$p" 2>/dev/null || true; }

@@ -121,7 +121,7 @@ if [ "${1:-}" = "--apply" ] && [ -z "${NB_OPERATOR:-}" ]; then
   . "$R/scripts/lib/selfapply.sh"
   printf "%sApplying explicit feedback to the model of the owner...%s\n" "$B" "$X"
   sa_begin
-  "$R/bin/claudew" -p "You are nathanbot updating its model of NATHAN — apply ONLY what he explicitly said.
+  NB_JOB=learn-apply "$R/bin/claudew" -p "You are nathanbot updating its model of NATHAN — apply ONLY what he explicitly said.
 
 SOURCE OF TRUTH — his explicit corrections (tasks/.feedback.jsonl):
 $(tail -40 "$FB" 2>/dev/null || echo '(none)')
@@ -143,7 +143,7 @@ fi
 
 printf "%sLearning from your behavior...%s\n" "$B" "$X"
 
-"$R/bin/claudew" -p "You are nathanbot building a better model of NATHAN — not improving your own code.
+NB_JOB=learn "$R/bin/claudew" -p "You are nathanbot building a better model of NATHAN — not improving your own code.
 (That's \`nb evolve\`. This is different: learn about the PERSON.)
 
 BEHAVIORAL EVIDENCE (what he actually did, not what he said):

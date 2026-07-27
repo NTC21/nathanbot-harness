@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 # claudew — the single choke point every headless `claude -p` call goes through.
 #
-# Runs the real claude CLI untouched and passes argv byte-identical, so
-# --allowedTools, --permission-mode, --model, --effort and NB_OPERATOR all reach
-# the CLI unchanged and the operator's safety fuses hold.
+# Runs the real claude CLI and passes argv through, so --allowedTools,
+# --permission-mode, --model, --effort and NB_OPERATOR all reach the CLI
+# unchanged and the operator's safety fuses hold.
+#
+# ONE addition, and it is deliberate: a minted --session-id, so the run's
+# transcript can be located afterwards by id (see the trace block below). It is
+# skipped when the caller supplies its own. stdout and stderr are still replayed
+# byte-for-byte, so no caller's parsing changes — which is why the output format
+# is left alone even though --output-format json would hand over the cost for
+# free. Every caller reads plain text, including the [[SEND_DRAFT]] scan.
 #
 # It used to retry against a local Ollama model when usage capped. That was
 # removed 2026-07-25: it had fired once in the system's lifetime, cost ~5GB plus a
@@ -56,9 +63,69 @@ fi
 # tasks/logs/digest.err is the receipt: "claude CLI not found".
 [ -n "${NB_CHECK:-}" ] && { printf '%s\n' "$REAL"; exit 0; }
 
+# Run FROM the repo. launchd gives a job whatever cwd it inherits — which is "/",
+# and nothing in the chain (rundue.sh, bin/nb, the plists, jarvis.py) ever cd's.
+# Measured before this line existed: 64 sessions under ~/.claude/projects/-/ with
+# cwd "/", including 28 voice-operator runs. At "/" the CLI discovers no
+# .claude/agents/, no CLAUDE.md, no AGENTS.md and no project settings — so the
+# voice channel was handed a prompt naming six specialists that did not exist in
+# its session, and every scheduled run was unattributable to a project.
+#
+# Safe because every prompt built in bin/nb interpolates absolute $R/... paths.
+# NB_CWD overrides, for when a task should run against another repo and load that
+# repo's CLAUDE.md instead of this one's.
+cd "${NB_CWD:-$R}" 2>/dev/null || true
+
+# ── trace ────────────────────────────────────────────────────────────────────
+# Mint a session id and hand it to the CLI, so the run's transcript — which
+# already holds tokens, model, and every tool call — can be found later by id.
+# The trace line itself carries ONLY what the transcript cannot know: the job
+# label and the process exit code. Everything else is read from the transcript
+# by scripts/lib/transcripts.py.
+#
+# Invariants. Break these and the file silently corrupts:
+#   * ONE printf, ONE line, short. bin/nb forks up to 8 concurrent claudew calls
+#     (config/projects.json defaults.max_concurrent), and append atomicity here
+#     is incidental — it holds because the lines are tiny.
+#   * NEVER log argv or prompt text. Prompts are 15-25 KB of injected memory, and
+#     nb evolve feeds this file back to a model.
+#   * NOT tasks/.telemetry.jsonl. Three readers would degrade there; the worst is
+#     learn.sh, which reads the whole file and counts .get("cmd") — trace records
+#     would surface as phantom commands "the owner runs", so the system would learn
+#     a false model of its owner from its own logs.
+#   * NB_CHECK returns above this. Five callers use it purely to resolve the
+#     binary; it must stay a hot no-op.
+TRACE="$R/tasks/.traces.jsonl"
+# self-rotate, same idiom as _telemetry in bin/nb — claudew can write when nb never runs
+if [ -f "$TRACE" ] && [ "$(wc -c <"$TRACE" 2>/dev/null || echo 0)" -gt 5242880 ]; then
+  mv -f "$TRACE" "$TRACE.old" 2>/dev/null || true
+fi
+# a caller that supplies its own id keeps it: passing the flag twice makes the
+# CLI exit non-zero, and "every reply became couldn't-reach-the-brain" is a
+# failure this repo has already shipped twice
+case " $* " in
+  *" --session-id "*) SID="" ;;
+  *) SID="$(/usr/bin/uuidgen 2>/dev/null | tr 'A-Z' 'a-z')" ;;
+esac
+_trace() {  # $1=ev  $2=rc  $3=dur
+  [ -n "${SID:-}" ] || return 0
+  printf '{"ts":"%s","ev":"%s","session":"%s","job":"%s","cwd":"%s","rc":%s,"dur_s":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$SID" "${NB_JOB:-unknown}" "$PWD" \
+    "${2:-null}" "${3:-null}" >> "$TRACE" 2>/dev/null || true
+}
+# START is written BEFORE the run and is not optional. subprocess.run(timeout=)
+# in server.py and jarvis.py sends SIGKILL, which is uncatchable — so a
+# post-run-only record loses exactly the 15-minute runs most worth seeing. Worse,
+# the kill lands on this wrapper, not the grandchild claude, which survives and
+# finishes writing its transcript: that run costs real money and would otherwise
+# be invisible. A start with no end is reported as killed, with its true cost.
+T0=$(date +%s)
+_trace start
+
 out="$(mktemp)"; err="$(mktemp)"
 trap 'rm -f "$out" "$err"' EXIT
-"$REAL" "$@" >"$out" 2>"$err"; rc=$?
+"$REAL" ${SID:+--session-id "$SID"} "$@" >"$out" 2>"$err"; rc=$?
+_trace end "$rc" "$(( $(date +%s) - T0 ))"
 
 LIMIT_RE="${NB_CLAUDE_LIMIT_REGEX:-usage limit reached|rate limit|overloaded|529|credit balance is too low}"
 

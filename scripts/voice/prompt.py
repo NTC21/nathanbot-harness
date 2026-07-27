@@ -77,7 +77,7 @@ OPERATOR_NB_VERBS = [
     # capture + read-only status
     "add", "inbox", "next", "status", "brief", "watch", "audit",
     # knowledge in / out — the whole point of the operator
-    "remember", "feedback", "wiki", "study", "news", "activity",
+    "remember", "feedback", "wiki", "study", "news", "activity", "usage", "recall",
     # planning + task hygiene (non-destructive forms)
     "triage", "plan", "done", "decide",
     # calendar staging — gcalendar.py is separately fused, so this can only stage
@@ -92,10 +92,33 @@ OPERATOR_NB_VERBS = [
 
 def operator_allowed_tools(root):
     nb = os.path.join(root, "bin", "nb")
-    return ["Read", "Grep", "Glob", "Edit", "Write", "WebSearch", "WebFetch", "Task",
+    return ["Read", "Grep", "Glob", "Edit", "Write", "WebSearch", "WebFetch",
+            # BOTH names. The delegation tool was renamed Task -> Agent in CLI
+            # 2.1.220; "Task" still resolves through an alias table today, so
+            # granting both survives the alias being dropped OR restored.
+            "Agent", "Task",
             *[f"Bash({nb} {v}:*)" for v in OPERATOR_NB_VERBS],
             f"Bash(python3 {root}/scripts/google/gmail.py:*)",
-            f"Bash(python3 {root}/scripts/google/gcalendar.py:*)"]
+            f"Bash(python3 {root}/scripts/google/gcalendar.py:*)",
+            # Read-only git, for the code-reviewer specialist. It declares Bash and
+            # needs a diff to review; without this it spawns, reads nothing, and
+            # reports that the code looks clean. None of these four can mutate a
+            # repo, and guard-bash.py separately blocks `git push` when unattended.
+            "Bash(git diff:*)", "Bash(git log:*)",
+            "Bash(git show:*)", "Bash(git status:*)"]
+
+
+def operator_add_dirs(root):
+    """Extra directories the operator may reach, beyond its cwd.
+
+    The career specialist reads and writes the resume master, which lives outside
+    the repo. Without this it is hard-blocked — the transcripts show five turns of
+    the owner asking it to check his folders and it correctly reporting that it
+    cannot. Scoped to the one directory, never ~/Documents. Non-existent paths are
+    dropped so a fresh checkout does not fail.
+    """
+    cands = [os.path.expanduser("~/Documents/Career/resumes")]
+    return [d for d in cands if os.path.isdir(d)]
 
 
 def operator_denied_tools(root):
@@ -122,6 +145,9 @@ def operator_denied_tools(root):
                  f"{h}/.config/gh", f"{h}/Library/Keychains", f"{h}/Library/Cookies"]
     out = [f"{tool}({r}/**)" for r in roots
            for tool in ("Read", "Grep", "Glob", "Edit", "Write")]
+    # not delegation — it appends to the task list. Denying it turns a wrong-tool
+    # grab into a visible failure instead of a silent no-op.
+    out.append("TaskCreate")
     for p in (f"{h}/.claude/settings.json", f"{h}/.claude/hooks",
               f"{root}/claude-hooks", f"{root}/config/permissions.json",
               f"{root}/config/accounts.json", f"{root}/prompts"):

@@ -113,6 +113,28 @@ wikiprobs=$(python3 scripts/wiki_index.py --lint 2>/dev/null | grep -c ':' || tr
 [ "$wikiprobs" = 0 ] && ok "wiki clean (schema, links, index in sync)" \
   || bad "$wikiprobs wiki problem(s) — run 'nb wiki lint'"
 
+hdr "12. Specialist agents"
+# Every agent named in the operator's roster must EXIST, and no agent file may
+# carry the <root> placeholder — nothing substitutes it (agent files don't go
+# through build_operator_prompt), so it reached the model literally and any path
+# built from it was wrong. Four of six files had it.
+missing=0
+for a in $(sed -n '/^YOUR SPECIALIST TEAM/,/^Routing rules:/p' prompts/operator.md \
+           | sed -n 's/^- \([a-z-]*\) *—.*/\1/p'); do
+  [ -f ".claude/agents/$a.md" ] || { bad "operator.md routes to '$a' but .claude/agents/$a.md is missing"; missing=1; }
+done
+ph=$(grep -rl '<root>' .claude/agents/ 2>/dev/null | tr '\n' ' ')
+[ -n "$ph" ] && bad "unsubstituted <root> in: $ph"
+[ "$missing" = 0 ] && [ -z "$ph" ] && ok "roster intact ($(ls .claude/agents/*.md 2>/dev/null | wc -l | tr -d ' ') agents, no placeholders)"
+
+hdr "13. Cost visibility"
+# A model the price table cannot price would otherwise contribute $0 to every
+# report — a number that looks like an answer. Extraction is keyed on the CLI
+# version, so this fires on the first run after an upgrade that adds a model.
+up=$(python3 scripts/usage.py --days 7 2>/dev/null | grep -c 'unpriced' || true)
+[ "$up" = 0 ] && ok "every model in the last 7d is priceable" \
+  || bad "unpriced model(s) in the last 7d — 'nb usage' is undercounting; see scripts/lib/transcripts.py"
+
 hdr "Memory vs reality (staleness)"
 # Structure checks above prove the wiring; this proves the CLAIMS still hold.
 # Confidently-wrong memory is worse than missing memory — a later session acts on it.

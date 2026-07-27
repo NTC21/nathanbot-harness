@@ -127,6 +127,11 @@ DENY_WRITE = [
         # The canonical entry doc every harness reads, and its Claude pointer.
         # A write here is durable prompt injection into every future session.
         "AGENTS.md", "CLAUDE.md",
+        # This repo's own Claude config. Only ~/.claude/settings.json was covered;
+        # the repo copy is where hooks would live, so an unattended write here is
+        # arbitrary code execution at the next session start. .claude/agents is the
+        # specialist roster — a rewritten agent runs with the operator's tools.
+        ".claude/settings.json", ".claude/agents",
     )],
     # Claude Code's own configuration and these very hooks
     _h(".claude", "settings.json"), _h(".claude", "hooks"),

@@ -27,7 +27,7 @@ printf "${B}Digesting %d daily note(s) + conversation...${X}\n" "${#notes[@]}"
 list=""; for n in "${notes[@]}"; do list+="- $n"$'\n'; done
 [ -z "$list" ] && list="(no daily notes today — mine the chat history and recent session notes only)"
 
-NB_FEEDBACK_SRC=digest "$R/bin/claudew" -p "You are nathanbot processing the owner's daily journal notes into system state.
+NB_FEEDBACK_SRC=digest NB_JOB=digest "$R/bin/claudew" -p "You are nathanbot processing the owner's daily journal notes into system state.
 
 READ these daily notes (read-only — never edit or delete them):
 $list

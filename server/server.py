@@ -13,7 +13,7 @@ NB = str(R/"bin"/"nb")
 import sys
 sys.path.insert(0, str(R/"scripts"/"voice"))
 from prompt import (build_operator_prompt, operator_allowed_tools,
-                    operator_denied_tools)  # shared with the voice daemon
+                    operator_denied_tools, operator_add_dirs)  # shared with voice
 
 
 def _which_claude():
@@ -704,7 +704,8 @@ class H(http.server.SimpleHTTPRequestHandler):
             home = os.path.expanduser("~")
             # claudew wraps CLAUDE_BIN: same CLI, argv passed through unchanged so
             # the tool scoping below holds; it reports a usage cap explicitly
-            chat_env = {**NB_ENV, "NB_OPERATOR": "1", "NB_CLAUDE_BIN": CLAUDE_BIN}
+            chat_env = {**NB_ENV, "NB_OPERATOR": "1", "NB_CLAUDE_BIN": CLAUDE_BIN,
+                        "NB_JOB": "chat"}
             argv = [str(R/"bin"/"claudew"), "-p", prompt,
                     "--model", chat_model(),
                     # only when set to a level the CLI accepts (see chat_effort)
@@ -714,7 +715,9 @@ class H(http.server.SimpleHTTPRequestHandler):
                     # voice daemon so the two channels cannot diverge. Enumerated
                     # nb verbs, never Bash(<nb>:*) — see the note there.
                     "--allowedTools", *operator_allowed_tools(str(R)),
-                    "--disallowedTools", *operator_denied_tools(str(R))]
+                    "--disallowedTools", *operator_denied_tools(str(R)),
+                    # the career specialist's source of truth lives outside the repo
+                    *[a for d in operator_add_dirs(str(R)) for a in ("--add-dir", d)]]
             try:
                 # cwd in the repo so the operator discovers .claude/agents/* (the specialists)
                 r = subprocess.run(argv, capture_output=True, text=True, timeout=900,

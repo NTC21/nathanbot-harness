@@ -41,6 +41,10 @@
 #   nb project <cmd>       projects: new|add|list                    (alias: proj)
 #   nb deliver "<text>"    push a message to your phone
 #
+#   nb usage [--days N]    what the agents actually did — cost, tools, dispatch, dead runs
+#   nb writeback [--day]   turn a day's agent activity into a dated session note
+#   nb recall "<query>"    search your run transcripts + commits (FTS over ~27k docs)
+#
 #   nb audit               self-heal check on the memory system
 #   nb stale               find memory that no longer matches reality
 #   nb new <name> [--type] scaffold a new project
@@ -180,7 +184,7 @@ Report a one-line summary per task created.
 EOF
 )
   local before; before=$(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ')
-  "$CLAUDE" -p "$prompt" --permission-mode acceptEdits 2>&1 | tail -30
+  NB_JOB=triage "$CLAUDE" -p "$prompt" --permission-mode acceptEdits 2>&1 | tail -30
   local after; after=$(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ')
 
   # State mutation happens HERE, in bash — and only if tasks were actually created.
@@ -384,7 +388,7 @@ cmd_plan() {
   [ $# -gt 0 ] || die "usage: nb plan \"the big thing you want\""
   NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1 || die "claude CLI not found"
   printf "${c_b}Planning:${c_0} %s\n" "$*"
-  "$CLAUDE" -p "Decompose this goal into independently executable tasks for the owner's nathanbot system.
+  NB_JOB=plan "$CLAUDE" -p "Decompose this goal into independently executable tasks for the owner's nathanbot system.
 
 GOAL: $*
 
@@ -462,7 +466,7 @@ print(os.path.expandvars(p['path']).replace('\${CODE_ROOT}', os.path.expanduser(
     $dry && continue
 
     ( CODE_ROOT="$HOME/Projects" \
-      "$CLAUDE" -p "$(cat "$f")
+      NB_JOB=run "$CLAUDE" -p "$(cat "$f")
 
 You are executing ONE task for the owner.
 
@@ -543,7 +547,7 @@ cmd_remember() {
   local note="$*"
   [ -z "${note// }" ] && die "usage: nb remember \"<a fact or rule to keep>\""
   printf "${c_b}Filing to nathanbot's brain...${c_0}\n"
-  "$CLAUDE" -p "the owner wants to durably remember this in nathanbot so EVERY harness (Claude Code,
+  NB_JOB=remember "$CLAUDE" -p "the owner wants to durably remember this in nathanbot so EVERY harness (Claude Code,
 Codex, OpenClaw, the web/voice operator) sees it — never siloed in one harness's private memory:
 
 \"$note\"
@@ -783,7 +787,7 @@ cmd_evolve() {
     . "$R/scripts/lib/selfapply.sh"
     sa_begin
     printf "${c_b}Applying safe-tier self-improvements...${c_0}\n"
-    "$CLAUDE" -p "You are nathanbot improving ITSELF. Apply ONLY safe-tier fixes, now.
+    NB_JOB=evolve-apply "$CLAUDE" -p "You are nathanbot improving ITSELF. Apply ONLY safe-tier fixes, now.
 
 YOU MAY EDIT ONLY THESE:
 - $R/wiki/pages/*.md, $R/wiki/index.md, $R/wiki/log.md   (fix stale/wrong/orphaned knowledge)
@@ -817,7 +821,7 @@ Reversible: git revert HEAD" || printf "${c_d}(nothing applied)${c_0}\n"
   # needed — this pass creates proposal task files. Edit and Bash are not: the
   # prompt's own contract is "create tasks, modify nothing", and every piece of
   # evidence is baked in shell-side below.
-  "$CLAUDE" -p "You are nathanbot analyzing ITSELF to propose improvements. Be concrete and evidence-based.
+  NB_JOB=evolve "$CLAUDE" -p "You are nathanbot analyzing ITSELF to propose improvements. Be concrete and evidence-based.
 
 EVIDENCE — read all of these:
 1. Usage telemetry (what the owner actually runs, how often, what fails):
@@ -865,7 +869,7 @@ Then print a short summary of what you proposed and why." \
 cmd_scout() {
   NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1 || die "claude CLI not found"
   printf "${c_b}Scouting new tools and systems...${c_0}\n"
-  "$CLAUDE" -p "Research tools, systems, or techniques the owner should know about.
+  NB_JOB=scout "$CLAUDE" -p "Research tools, systems, or techniques the owner should know about.
 
 HIS CONTEXT: read $R/shared-memory/OVERVIEW.md and $R/wiki/pages/owner.md.
 Stack: Expo/React Native, Next.js, Cloudflare Workers, AWS SAM/Lambda, Python, ESP32.
@@ -968,6 +972,9 @@ case "${1:-}" in
   done)   shift; cmd_done "$@" ;;
   decide) shift; cmd_decide "$@" ;;
   audit)  cmd_audit ;;
+  usage)    shift; python3 "$R/scripts/usage.py" "$@" ;;
+  writeback|wb) shift; "$R/scripts/writeback.sh" "$@" ;;
+  recall)   shift; python3 "$R/scripts/recall.py" "$@" ;;
   stale)  shift; python3 "$R/scripts/stale.py" "$@" ;;
   brief)  shift; cmd_brief "$@" ;;
   evolve) shift; cmd_evolve "$@" ;;

@@ -32,7 +32,7 @@ esac
 
 printf "${B}Studying (%s)...${X}\n" "$mode"
 
-"$R/bin/claudew" -p "You are nathanbot studying external material to get BETTER at the owner's work.
+NB_JOB=study "$R/bin/claudew" -p "You are nathanbot studying external material to get BETTER at the owner's work.
 $srcline
 
 the owner's context: read $R/shared-memory/OVERVIEW.md and $R/wiki/pages/owner.md so you

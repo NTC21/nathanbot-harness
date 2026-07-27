@@ -49,7 +49,7 @@ Give him a brief he reads in 30 seconds:
 Format each line exactly like:
 Headline here - why it matters (https://source-url)"
 
-out="$("$CLAUDE" -p "$prompt" --allowedTools "WebSearch" "WebFetch" "Read" 2>&1)"
+out="$(NB_JOB=news "$CLAUDE" -p "$prompt" --allowedTools "WebSearch" "WebFetch" "Read" 2>&1)"
 
 # strip any stray ANSI, trim
 out="$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g')"

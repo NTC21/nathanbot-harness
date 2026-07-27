@@ -49,7 +49,7 @@ HALLUC = {"you", "thank you.", "thanks for watching!", "[blank_audio]", ".", ". 
 
 sys.path.insert(0, HERE)
 from prompt import (build_operator_prompt, operator_allowed_tools,
-                    operator_denied_tools)  # noqa: E402
+                    operator_denied_tools, operator_add_dirs)  # noqa: E402
 
 CONVO = deque(maxlen=6)
 
@@ -71,7 +71,7 @@ HARDENED_PATH = os.pathsep.join([
     os.path.dirname(CLAUDE_BIN), "/opt/homebrew/bin", "/usr/local/bin",
     "/usr/bin", "/bin", "/usr/sbin", "/sbin", os.path.expanduser("~/.local/bin"),
 ])
-ENV = {**os.environ, "PATH": HARDENED_PATH, "NB_OPERATOR": "1",
+ENV = {**os.environ, "PATH": HARDENED_PATH, "NB_OPERATOR": "1", "NB_JOB": "voice",
        "NB_CLAUDE_BIN": CLAUDE_BIN}   # claudew resolves the real CLI from this
 
 
@@ -194,9 +194,14 @@ def ask_operator(text):
     argv = [os.path.join(ROOT, "bin", "claudew"), "-p", prompt,
             "--permission-mode", "acceptEdits",
             "--allowedTools", *operator_allowed_tools(ROOT),
-            "--disallowedTools", *operator_denied_tools(ROOT)]
+            "--disallowedTools", *operator_denied_tools(ROOT),
+            *[a for d in operator_add_dirs(ROOT) for a in ("--add-dir", d)]]
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=900, env=ENV)
+        # cwd=ROOT explicitly: claudew cd's too, but this is the channel whose
+        # prompt names six specialists, and 28 voice sessions ran at "/" where
+        # .claude/agents/ does not exist. Belt and braces on the one that matters.
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=900,
+                           env=ENV, cwd=ROOT)
     except subprocess.TimeoutExpired:
         return "That took too long, sir."
     out = _strip_ansi(r.stdout).strip()
