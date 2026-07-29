@@ -13,7 +13,7 @@ R="$HOME/Projects/nathanbot"
 NB="$R/bin/nb"
 OPEN="$R/tasks/open"
 
-decide=0; ready=0; blocked=0
+decide=0; ready=0; blocked=0; looksdone=0
 dtitles=()
 for f in "$OPEN"/*.md; do
   [ -e "$f" ] || continue
@@ -23,19 +23,23 @@ for f in "$OPEN"/*.md; do
     needs-decision) decide=$((decide+1)); dtitles+=("$ti") ;;
     ready)          ready=$((ready+1)) ;;
     blocked)        blocked=$((blocked+1)) ;;
+    # also needs the owner, so it belongs in the menu-bar count -- a status this
+    # script does not know about is a status that silently reads as zero
+    looks-done)     looksdone=$((looksdone+1)); dtitles+=("✓? $ti") ;;
   esac
 done
 
 # ── menu-bar title: arc mark + count of things needing you ──
-if [ "$decide" -gt 0 ]; then
-  echo "◆ $decide | color=#c9922f"
+needsyou=$((decide + looksdone))
+if [ "$needsyou" -gt 0 ]; then
+  echo "◆ $needsyou | color=#c9922f"
 else
   echo "◆ | color=#9a9a9a"
 fi
 
 echo "---"
 echo "nathanbot | size=11 color=#8a8a8a"
-echo "$decide awaiting you · $ready ready · $blocked held | size=12"
+echo "$decide awaiting you · $looksdone to confirm · $ready ready · $blocked held | size=12"
 echo "---"
 echo "⚡ Capture a thought | bash=\"/bin/bash\" param1=\"-c\" param2=\"$R/scripts/capture.sh\" terminal=false"
 # speaks + notifies only — Discord/iMessage delivery stays on the 07:30 schedule

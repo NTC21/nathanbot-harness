@@ -119,8 +119,16 @@ EV="$(evidence)"
 # Operator never triggers this (NB_OPERATOR guard); scheduled Monday run does.
 if [ "${1:-}" = "--apply" ] && [ -z "${NB_OPERATOR:-}" ]; then
   . "$R/scripts/lib/selfapply.sh"
+  # WAIT rather than skip. Evolve runs 08:00 and this 08:30, but rundue.sh
+  # catch-up fires missed jobs back-to-back, so after a slept-through Monday
+  # this starts ~1 min into a 5-minute evolve run. Waiting keeps the intended
+  # ordering without inventing a priority protocol, and the pass still lands
+  # this Monday instead of next. NB_SA_WAIT=0 to skip instead.
+  if ! sa_begin learn "${NB_SA_WAIT:-900}"; then
+    exit "$SA_EX_LOCKED"        # NOT 0 -- a pass that did nothing must not look clean
+  fi
+  trap 'sa_release' EXIT INT TERM
   printf "%sApplying explicit feedback to the model of the owner...%s\n" "$B" "$X"
-  sa_begin
   NB_JOB=learn-apply "$R/bin/claudew" -p "You are nathanbot updating its model of NATHAN — apply ONLY what he explicitly said.
 
 SOURCE OF TRUTH — his explicit corrections (tasks/.feedback.jsonl):
@@ -138,7 +146,13 @@ already reflected, change nothing. Print one line per edit." \
   sa_commit '^(wiki/pages/nathan\.md|shared-memory/OVERVIEW\.md)$' \
     "auto-learn: encode explicit feedback into the model of the owner
 
-Applied by 'nb learn --apply' (feedback-traceable edits only). Not pushed." || true
+Applied by 'nb learn --apply' (feedback-traceable edits only). Not pushed."
+  # `|| true` used to swallow every one of these. rc 1 is benign; 2 and 3 are not.
+  case $? in
+    2) printf "%slearn: pass REVERTED — secret-looking content in the edits%s\n" "$Y" "$X" >&2 ;;
+    3) printf "%slearn: commit FAILED — edits stranded in the working tree%s\n" "$Y" "$X" >&2 ;;
+  esac
+  sa_release
 fi
 
 printf "%sLearning from your behavior...%s\n" "$B" "$X"

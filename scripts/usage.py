@@ -25,6 +25,7 @@ from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/lib")
 import transcripts as T  # noqa: E402
+import telemetry as TEL  # noqa: E402
 
 B, D, G, Y, R_, X = "\033[1m", "\033[2m", "\033[32m", "\033[33m", "\033[31m", "\033[0m"
 
@@ -108,6 +109,59 @@ def digest(day):
     return 0
 
 
+def cli_failures(since, span_label, detail=False):
+    """The other half of `nb usage`: CLI invocations, not agent runs.
+
+    usage.py has only ever read the CLI's transcripts. `rc` lives in
+    tasks/.telemetry.jsonl, so this is a second data source and is printed as its
+    own block rather than folded into the numbers above — a `nb stale` that found
+    drift is not an agent run and must not be costed like one.
+
+    Called BEFORE the `if not runs` early return: a week with no agent activity is
+    exactly when you want to know what the CLI was doing.
+    """
+    # same override the writer honours (bin/nb _telemetry), so a test run can be
+    # pointed at a scratch log instead of polluting the real one
+    rs = TEL.rows(os.environ.get("NB_TELEMETRY_FILE")
+                  or os.path.join(T.ROOT, "tasks", ".telemetry.jsonl"), since)
+    if not rs:
+        return
+    buckets, (lo, hi) = TEL.tally(rs)
+    nbad = sum(sum(c.values()) for c in buckets.values())
+    print(f"\n{B}CLI commands — {span_label}{X}  "
+          f"{D}{len(rs)} runs, {nbad} non-zero{X}")
+    if not buckets:
+        print(f"  {G}every command exited 0{X}")
+        return
+
+    for k in TEL.ORDER:
+        c = buckets.get(k)
+        if not c:
+            continue
+        name, why = TEL.LABEL[k]
+        col = R_ if k in TEL.REAL_FAILURES else (D if k in ("finding", "unclassified") else Y)
+        items = " · ".join(f"{lbl} ×{n}"
+                           for lbl, n in sorted(c.items(), key=lambda kv: -kv[1])[:6])
+        n = sum(c.values())
+        if k == "unclassified":
+            # Say what cannot be known, rather than guessing it from a list of
+            # command names. That list is the thing that rots (t-0037, option B).
+            print(f"  {D}{name:12}{X}{n:<4}{D}{items}{X}")
+            print(f"  {'':12}{D}└ logged {lo}..{hi}, before exits were labelled — "
+                  f"cannot be split into crashed vs found without guessing{X}")
+        else:
+            print(f"  {col}{name:12}{X}{n:<4}{D}{items}  ({why}){X}")
+
+    if detail:
+        print()
+        for r in sorted(rs, key=lambda r: r.get("ts", "")):
+            k = TEL.classify(r)
+            if not k:
+                continue
+            print(f"  {r.get('ts','')[:16]}  {TEL.label_of(r):18} "
+                  f"rc={r.get('rc'):<4} {D}{k}{X}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=7)
@@ -117,6 +171,8 @@ def main():
     ap.add_argument("--digest", action="store_true",
                     help="structured evidence for one day (feeds writeback.sh)")
     ap.add_argument("--day", help="YYYY-MM-DD, with --digest")
+    ap.add_argument("--failures", action="store_true",
+                    help="also list each non-zero CLI exit individually")
     a = ap.parse_args()
 
     if a.digest:
@@ -200,11 +256,14 @@ def main():
         except OSError:
             pass
 
+    span = "all time" if a.all else f"{a.days}d"
+
     if not runs:
         print(f"{D}no agent runs in the last {a.days}d{X}")
+        cli_failures(since, span, a.failures)   # a quiet agent week is when this matters most
+        print()
         return 0
 
-    span = "all time" if a.all else f"{a.days}d"
     print(f"\n{B}Usage — {span}{X}  {D}list-price equivalent; you're on a subscription, "
           f"this is not billed spend{X}")
 
@@ -259,6 +318,8 @@ def main():
     stray = [r for r in runs if r["cwd"] == "/"]
     if stray:
         print(f"  {Y}{'no cwd':8}{X}{len(stray)} run(s) at '/' — no agents, no CLAUDE.md")
+
+    cli_failures(since, span, a.failures)
 
     if a.sessions:
         print()

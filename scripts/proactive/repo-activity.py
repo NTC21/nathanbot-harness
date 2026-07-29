@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Repo awareness — nathanbot notices what you ship. Finds every git repo under
-your code root (INCLUDING nested ones like OperBot/operbot), tracks the last commit
+your code root (INCLUDING nested ones like Foo/foo), tracks the last commit
 it saw per repo, and on new commits surfaces them. This is what watch.sh missed:
 it only saw top-level repos and only 'dirty tree', never commits/pushes.
 

@@ -17,6 +17,13 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.settings.basic",
     "https://www.googleapis.com/auth/calendar",
+    # Sheets read/write. Added 2026-07-27 so the CRM stops needing a manual
+    # File > Import: `nb crm` appends rows and stamps touch dates directly.
+    # The claude.ai Drive connector cannot do this — it has no write-to-existing
+    # -file verb at all (only search/read/create), which is why the CSV had to be
+    # hand-imported once. Tokens issued before this line lack the scope; Sheets
+    # calls 403 until `nb mail login <account>` is re-run. Gmail/calendar keep working.
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 

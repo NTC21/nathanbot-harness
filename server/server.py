@@ -654,7 +654,8 @@ class H(http.server.SimpleHTTPRequestHandler):
         if path == "/api/status":
             # validate: status is one of ours, never raw client text into the file
             new = body.get("status")
-            if new not in {"ready", "blocked", "needs-decision", "done", "failed"}:
+            if new not in {"ready", "blocked", "needs-decision", "done", "failed",
+                           "looks-done"}:
                 return self._json({"ok": False, "error": "bad status"}, 400)
             for p in OPEN.glob("*.md"):
                 if fm(p).get("id") == body.get("id"):

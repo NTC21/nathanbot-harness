@@ -192,7 +192,7 @@ def index_commits(c, full):
 def build_recall_sql(query, kind=None, project=None, days=None, limit=10):
     """Pure: returns (sql, params). No DB handle, so the query SHAPE is testable
     without a database — the part most likely to have bugs. Filter first (kind,
-    project, date window), rank second, exactly as OperBot's retrieval does.
+    project, date window), rank second, as a production retrieval pipeline does.
 
     Rank is bm25 scaled by recency. bm25() returns NEGATIVE numbers where more
     negative is a better match, so the decay divides rather than multiplies.

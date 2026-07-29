@@ -270,7 +270,13 @@ def main():
             print(f"    {rel}:{line}  {detail}")
         print()
     print("  Fix by editing the file, or `nb remember` the corrected fact.")
-    return 1
+    # 3, not 1. Finding drift is a RESULT; an uncaught exception also exits
+    # non-zero, and if both were 1 then tagging `stale` as "non-zero on purpose"
+    # in the telemetry log would hide every real traceback behind ~22 working
+    # runs. 1 stays reserved for genuine failure.
+    # Every consumer reads stdout, not the exit code (bin/nb:680, audit.sh:180,
+    # scripts/hooks/pre-commit:17, scripts/hooks/pre-push:55), so this is free.
+    return 3
 
 
 if __name__ == "__main__":

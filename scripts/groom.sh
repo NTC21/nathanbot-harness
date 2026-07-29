@@ -49,7 +49,13 @@ for f in "$OPEN"/*.md; do
   if [ "$st" = "needs-decision" ] && [ "$a" -gt 60 ]; then
     archive "$f" "undecided ${a}d — silence is a no"; n=$((n+1)); continue
   fi
-  if { [ "$pr" = "4" ] || [ "$pr" = "5" ]; } && [ "$a" -gt 30 ]; then
+  if [ "$st" = "looks-done" ] && [ "$a" -gt 60 ]; then
+    archive "$f" "flagged done ${a}d ago, never confirmed"; n=$((n+1)); continue
+  fi
+  # looks-done is EXCLUDED from the P4/P5 rule below: evolve touched it, with
+  # evidence, so "untouched" is false and archiving it would silently discard a
+  # finish the owner was being asked to confirm. It gets the 60d rule above instead.
+  if [ "$st" != "looks-done" ] && { [ "$pr" = "4" ] || [ "$pr" = "5" ]; } && [ "$a" -gt 30 ]; then
     archive "$f" "P${pr}, ${a}d untouched"; n=$((n+1)); continue
   fi
 done

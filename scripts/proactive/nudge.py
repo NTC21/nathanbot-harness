@@ -4,6 +4,16 @@ don't have to check. Runs every ~10 min (launchd). Each event nudges once (dedup
 
   NB_NUDGE_MIN   how many minutes ahead to warn (default 30)
 Push goes through deliver.sh -> every configured channel, incl. Telegram.
+
+SCOPE: CALENDAR EVENTS ONLY. This does not, and never did, chase the owner about
+tasks awaiting his answer. t-0019 ("how should nathanbot chase you for answers
+it's waiting on") was closed on 2026-07-22 with this job cited as the thing that
+shipped, but it only ever iterated gc.list_events. Its log files were 0 bytes
+from the day they were created while four tasks sat unanswered for five days --
+a chaser that ran on schedule, exited clean, and had no task coverage at all.
+Task chasing now lives in `nb brief` (see scripts/lib/asks.py). Do not add it
+here: this job is silent when nothing is imminent, which is exactly wrong for
+something that must get louder the longer it waits.
 """
 import json, os, sys, subprocess, pathlib
 from datetime import datetime, timezone, timedelta

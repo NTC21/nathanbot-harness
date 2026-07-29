@@ -135,6 +135,63 @@ up=$(python3 scripts/usage.py --days 7 2>/dev/null | grep -c 'unpriced' || true)
 [ "$up" = 0 ] && ok "every model in the last 7d is priceable" \
   || bad "unpriced model(s) in the last 7d — 'nb usage' is undercounting; see scripts/lib/transcripts.py"
 
+hdr "14. Task id collisions"
+# next_id() scanned open/ + done/ only, so an id became available again the moment
+# groom archived its holder. Fixed forward by d518ed5 (archive/ is now scanned);
+# this is the check that stops it drifting back. The decision journal is keyed on
+# these ids and _find_open resolves by prefix, so a collision silently mis-keys
+# both. Nothing looks broken while it happens -- hence a check.
+dupes=$(python3 - <<'PY' 2>/dev/null || echo '?'
+import glob, os, re, collections
+# The collisions that predate the fix. Renumbering them would edit records of
+# real past decisions and break .decisions.jsonl keys -- the owner's call,
+# 2026-07-27: fix forward, leave history alone.
+#
+# EIGHT, not three. t-0033's write-up named only 0027/0028/0029 because those are
+# the ones with a live file in open/; d518ed5's commit message had the real count.
+# A NINTH duplicate means next_id regressed and must shout, which is the only
+# reason this list is enumerated rather than "ignore anything already duplicated".
+# Do not add to it to quieten a warning -- a new entry here is a bug being hidden.
+KNOWN = {"0003", "0004", "0005", "0012", "0013", "0027", "0028", "0029"}
+seen = collections.defaultdict(list)
+for d in ("open", "done", "archive", ""):
+    for f in glob.glob(os.path.join("tasks", d, "t-*.md")):
+        m = re.match(r"t-(\d+)", os.path.basename(f))
+        if m:
+            seen[m.group(1)].append(f)
+out = [f"t-{i} in {len(fs)} files: {', '.join(sorted(os.path.dirname(x) or 'tasks' for x in fs))}"
+       for i, fs in sorted(seen.items()) if len(fs) > 1 and i not in KNOWN]
+print("\n".join(out))
+PY
+)
+if [ "$dupes" = '?' ]; then bad "task id check failed to run"
+elif [ -z "$dupes" ]; then ok "no duplicate task ids (8 pre-d518ed5 collisions grandfathered)"
+else
+  # here-string, not a pipe: a piped `while` runs in a subshell and bad()'s
+  # increment to $warn would be discarded, so the run would end "0 warning(s)".
+  while IFS= read -r l; do
+    [ -n "$l" ] && bad "duplicate task id -- next_id regressed: $l"
+  done <<< "$dupes"
+fi
+
+hdr "15. Command failures (last 7d)"
+# rc was written on every telemetry line since 2026-07-21 and read by nothing.
+# A rising crash rate belongs in the place the owner already checks. Counts only
+# crashed/unrunnable: `nb stale` exiting non-zero because it FOUND drift is a
+# result, and counting ~22 of those would make this fire constantly and be
+# ignored -- the exact failure mode section 10's comment already names.
+crashes=$(python3 - <<'PY' 2>/dev/null || echo '?'
+import sys, os, time
+sys.path.insert(0, os.path.join("scripts", "lib"))
+import telemetry as TEL
+b, _ = TEL.tally(TEL.rows("tasks/.telemetry.jsonl", time.time() - 7 * 86400))
+print(TEL.count(b, TEL.REAL_FAILURES))
+PY
+)
+if [ "$crashes" = '?' ]; then bad "command-failure check failed to run"
+elif [ "$crashes" = 0 ]; then ok "no command crashes in the last 7d"
+else bad "$crashes command crash(es) in the last 7d — 'nb usage --failures'"; fi
+
 hdr "Memory vs reality (staleness)"
 # Structure checks above prove the wiring; this proves the CLAIMS still hold.
 # Confidently-wrong memory is worse than missing memory — a later session acts on it.

@@ -11,8 +11,9 @@
 #   evolve  weekly Mon 08:00 — proposes improvements as needs-decision tasks.
 #   scout   monthly 1st 08:30 — researches new tools, writes wiki pages.
 #
-# The 22:45 sync job commits+pushes THIS repo. Nothing pushes project code or merges. Execution (`nb run`) stays manual
-# until you explicitly add it.
+# The 22:45 sync job commits+pushes THIS repo. Nothing pushes project code or merges. There is
+# no scheduled execution of tasks at all — `nb run` was retired 2026-07-26; work happens in a
+# Claude Code session.
 set -euo pipefail
 
 R="$(cd "$(dirname "$0")/.." && pwd)"
@@ -131,7 +132,8 @@ EOF
     echo
     echo "  This list is hand-maintained and drifts. 'nb schedule status' is the truth."
     echo
-    echo "The 22:45 sync job commits+pushes THIS repo; nothing pushes project code or merges. 'nb run' stays manual."
+    echo "The 22:45 sync job commits+pushes THIS repo; nothing pushes project code or merges."
+    echo "Nothing executes tasks — 'nb run' was retired 2026-07-26. Work happens in a session."
     ;;
   status)
     echo "Loaded jobs:"
@@ -197,6 +199,8 @@ EOF
   install-nudge)
     # Proactive calendar heads-ups. Runs every 10 min; nudge.py dedups + is silent
     # when nothing's imminent, so a frequent interval is cheap.
+    # CALENDAR EVENTS ONLY -- this does not chase the owner about unanswered tasks,
+    # despite t-0019 having been closed as though it did. That lives in `nb brief`.
     cat > "$LA/$PREFIX.nudge.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

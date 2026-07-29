@@ -160,8 +160,8 @@ def cmd_send(a):
 
     # The account must be marked connected in the identity registry. Until now
     # only 'personal' could send because the other three have no token on disk —
-    # an absence, not a rule. ~/.secrets/hsnc/ already exists, so one `nb mail
-    # login hsnc` would have silently made an unauthorized business identity
+    # an absence, not a rule. ~/.secrets/<business>/ already exists, so one
+    # `nb mail login <business>` would have silently made an unauthorized identity
     # sendable. AGENTS.md calls a wrong sending identity unrecoverable.
     acct = auth.accounts_cfg().get(a.account, {})
     if not acct.get("connected"):

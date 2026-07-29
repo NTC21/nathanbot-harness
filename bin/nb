@@ -49,6 +49,7 @@
 #   nb schedule install    make it ambient (launchd: brief daily, evolve+tidy weekly)
 #   nb profile <cmd>       capability layers per project (list|show|apply|sync|check)
 #   nb mail <cmd>          gmail: login|status|search|read|draft|send (--account required)
+#   nb crm <cmd>           sheets CRM: append|touch|due|show  (e.g. nb crm due <pipeline>)
 #   nb perms [set k lvl]   what Claude may do without asking (enforced in code)
 #
 set -uo pipefail
@@ -66,6 +67,14 @@ TASK_STYLE='WRITE EVERY TASK SO NATHAN NEVER HAS TO ASK "what is this?" — assu
 non-engineer is reading it cold, months from now:
 - title: a plain-English sentence, NOT a code/file reference. A decision starts with "Decide:".
   If it needs info from the owner before it can move, say that in the title.
+- ask: (frontmatter, ONLY when something is genuinely owed by the owner) ONE plain-English
+  sentence that IS the question, quoted. This is the line that reaches his phone and his
+  morning brief, on its own, with no surrounding context — so it must stand alone and must
+  not need decoding. Recommend an option inside it where you have one.
+    GOOD  ask: "Where do you want to post personal writing, and how often? (LinkedIn, 2x/week?)"
+    BAD   ask: "Platform and cadence. Options:"        <- not a question, needs the body
+    BAD   ask: "Decide t-0028"                         <- a label, not a question
+  Omit the field entirely if nothing is owed. Never write a placeholder.
 - body, IN THIS EXACT ORDER, plain language, expand every acronym, no bare file paths up top:
     **What this is** — 1-2 sentences anyone understands.
     **Why it matters** — the concrete consequence of doing / not doing it.
@@ -202,6 +211,9 @@ EOF
 
 # ── read task frontmatter ────────────────────────────────────────────────────
 _fm() { grep -m1 "^$2:" "$1" 2>/dev/null | sed "s/^$2:[[:space:]]*//"; }
+# _fm returns the raw frontmatter value, so every caller re-stripped the quotes
+# with the same sed. Factored once rather than adding a ninth copy.
+_fmv() { _fm "$1" "$2" | sed 's/^"//;s/"$//'; }
 
 # Route a task's domain to its memory workspace, so write-back fills the right
 # folder instead of everything landing in 'general'. Keeps the 5-way split real.
@@ -258,6 +270,8 @@ cmd_next() {
   # proposed = AI suggestions waiting for your yes; kept OUT of ready so they don't distract
   local prop=0; for f in "$OPEN"/*.md; do [ -e "$f" ] && [ "$(_fm "$f" status)" = "proposed" ] && prop=$((prop+1)); done
   [ "$prop" -gt 0 ] && printf "  ${c_d}%s suggestion(s) waiting — 'nb review' to promote or drop${c_0}\n" "$prop"
+  local ld=0; for f in "$OPEN"/*.md; do [ -e "$f" ] && [ "$(_fm "$f" status)" = "looks-done" ] && ld=$((ld+1)); done
+  [ "$ld" -gt 0 ] && printf "  ${c_g}%s look(s) already finished — 'nb decide' to confirm${c_0}\n" "$ld"
   return 0
 }
 
@@ -330,9 +344,14 @@ cmd_review() {    # AI suggestions ('proposed') waiting on you — promote or dr
     for f in "${list[@]}"; do
       printf "  %s > " "$(_fm "$f" title | sed 's/^"//;s/"$//' | cut -c1-46)"
       local a; read -r a </dev/tty
+      # Both arms log. Neither used to: promoting and dropping through `nb review`
+      # wrote nothing to .decisions.jsonl, so the whole review surface was
+      # invisible to learn.sh -- and what the owner DROPS is the strongest available
+      # signal about what he does not value.
       case "$a" in
-        y) _set_status "$f" ready; printf "    ${c_g}→ ready${c_0}\n" ;;
-        d) mkdir -p "$R/tasks/done"; mv "$f" "$R/tasks/done/" 2>/dev/null; printf "    ${c_d}dropped${c_0}\n" ;;
+        y) _log_decision "$f" approve; _set_status "$f" ready; printf "    ${c_g}→ ready${c_0}\n" ;;
+        d) _log_decision "$f" drop; mkdir -p "$R/tasks/done"
+           mv "$f" "$R/tasks/done/" 2>/dev/null; printf "    ${c_d}dropped${c_0}\n" ;;
       esac
     done
   else
@@ -342,13 +361,16 @@ cmd_review() {    # AI suggestions ('proposed') waiting on you — promote or dr
 }
 
 cmd_status() {
-  local ready=0 blocked=0 decide=0 running=0 done_n=0 proposed=0 failed=0
+  local ready=0 blocked=0 decide=0 running=0 done_n=0 proposed=0 failed=0 looksdone=0
   for f in "$OPEN"/*.md; do
     [ -e "$f" ] || continue
     case "$(_fm "$f" status)" in
       ready) ready=$((ready+1)) ;; blocked) blocked=$((blocked+1)) ;;
       needs-decision) decide=$((decide+1)) ;; running) running=$((running+1)) ;;
       proposed) proposed=$((proposed+1)) ;;
+      # evolve found evidence this is already finished. It cannot close anything
+      # itself -- this is the state where it hands the conclusion to the owner.
+      looks-done) looksdone=$((looksdone+1)) ;;
       # cmd_run writes this on a failed task and the API accepts it, but no
       # reader displayed it — so a failed task was invisible in every surface
       failed) failed=$((failed+1)) ;;
@@ -369,14 +391,30 @@ cmd_status() {
       printf "    ${c_r}%-10s${c_0} %s\n" "$(_fm "$f" id)" "$(_fm "$f" title | sed 's/^"//;s/"$//' | cut -c1-56)"
     done
   fi
+  if [ "$looksdone" -gt 0 ]; then
+    printf "  ${c_g}looks done${c_0}     %s  ${c_d}(evidence says finished — 'nb decide' to confirm)${c_0}\n" "$looksdone"
+    for f in "$OPEN"/*.md; do
+      [ -e "$f" ] || continue
+      [ "$(_fm "$f" status)" = "looks-done" ] || continue
+      printf "    ${c_g}%-10s${c_0} %s\n" "$(_fm "$f" id)" "$(_fmv "$f" title | cut -c1-56)"
+    done
+  fi
   printf "  ${c_d}done${c_0}           %s\n" "$done_n"
   printf "  ${c_d}inbox untriaged %s${c_0}\n" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)"
 
-  if [ "$decide" -gt 0 ]; then
+  # proposed counts as waiting too. It means "written down, never looked at by
+  # the owner" -- there are currently zero needs-decision items and four proposed
+  # ones aged 4-5 days, so listing only needs-decision showed an empty section
+  # while the queue had four unanswered questions in it.
+  if [ $((decide + proposed)) -gt 0 ]; then
     printf "\n${c_r}Waiting on you:${c_0}\n"
+    local now age flag; now=$(date +%s)
     for f in "$OPEN"/*.md; do
       [ -e "$f" ] || continue
-      [ "$(_fm "$f" status)" = "needs-decision" ] && printf "  • %s %s\n" "$(_fm "$f" id)" "$(_fm "$f" title)"
+      case "$(_fm "$f" status)" in needs-decision|proposed) ;; *) continue ;; esac
+      age=$(( ( now - $(date -j -f "%Y-%m-%d" "$(_fm "$f" created)" +%s 2>/dev/null || echo "$now") ) / 86400 ))
+      flag=""; [ "$age" -ge "${NB_CHASE_DAYS:-2}" ] && flag=" ${c_r}(${age}d)${c_0}"
+      printf "  • %s %s%b\n" "$(_fm "$f" id)" "$(_fmv "$f" title)" "$flag"
     done
   fi
   return 0
@@ -492,7 +530,14 @@ _log_decision() {
     ready)   action=approve ;;
     blocked) action=defer ;;
     done)    action=resolve ;;
+    # the server/UI path passes a target status; evolve flagging a finish is not
+    # the owner deciding anything, so it gets its own verb rather than borrowing one
+    looks-done) action=flag-done ;;
   esac
+  # confirm-done / reopen come in from cmd_decide as verbs already. Kept distinct
+  # from `resolve` on purpose: learn.sh tallies by_action, so "the system said
+  # this was finished and the owner agreed" is a different and much more useful
+  # signal than "the owner closed this himself".
   local jf="$R/tasks/.decisions.jsonl"
   python3 - "$f" "$action" "$jf" "$note" <<'PYEOF'
 import json, sys, re, datetime, os
@@ -536,15 +581,35 @@ cmd_decide() {
     f=$(ls "$OPEN"/*"$1"*.md 2>/dev/null | head -1)
     [ -z "$f" ] && die "no open task matching '$1'"
   else
-    # interactive: walk every needs-decision item
+    # interactive: walk every item awaiting a call — questions AND the finishes
+    # evolve flagged. Both are "the owner says yes or no"; they differ only in what
+    # yes means, so they belong in one pass rather than a second command.
     local list=()
     for x in "$OPEN"/*.md; do
       [ -e "$x" ] || continue
-      [ "$(_fm "$x" status)" = "needs-decision" ] && list+=("$x")
+      case "$(_fm "$x" status)" in needs-decision|looks-done) list+=("$x") ;; esac
     done
     [ ${#list[@]} -eq 0 ] && { printf "${c_d}nothing awaiting a decision${c_0}\n"; return 0; }
     printf "${c_b}%s decision(s) pending${c_0}\n\n" "${#list[@]}"
     for x in "${list[@]}"; do
+      if [ "$(_fm "$x" status)" = "looks-done" ]; then
+        printf "${c_g}%s${c_0} [%s] %s\n  ${c_d}evolve says this is already finished:${c_0}\n" \
+          "$(_fm "$x" id)" "$(_fm "$x" project)" "$(_fmv "$x" title)"
+        sed -n '/^\*\*Looks done/,$p' "$x" | sed '/^$/d;s/^/    /'
+        printf "\n  ${c_g}[y]${c_0}es, it's done   ${c_y}[n]${c_0}o, back to ready   ${c_d}[s]${c_0}kip   [q]uit\n  > "
+        read -r ans </dev/tty
+        case "$ans" in
+          y) _log_decision "$x" confirm-done
+             sed -i '' 's/^status: .*/status: done/' "$x"; mv "$x" "$DONE/"
+             printf "  ${c_g}→ done${c_0}\n\n" ;;
+          n) _log_decision "$x" reopen
+             sed -i '' 's/^status: .*/status: ready/' "$x"
+             printf "  ${c_y}→ back to ready${c_0}\n\n" ;;
+          q) break ;;
+          *) printf "  ${c_d}skipped${c_0}\n\n" ;;
+        esac
+        continue
+      fi
       printf "${c_b}%s${c_0} [%s] %s\n" "$(_fm "$x" id)" "$(_fm "$x" project)" "$(_fm "$x" title)"
       sed -n '/^---$/,/^---$/!p' "$x" | sed '/^$/d' | head -8 | sed 's/^/    /'
       printf "\n  ${c_g}[a]${c_0}pprove → ready   ${c_y}[d]${c_0}efer   ${c_r}[x]${c_0} drop   ${c_d}[s]${c_0}kip   [q]uit\n  > "
@@ -597,13 +662,23 @@ cmd_brief() {
   local quiet=false speak=false deliver=false
   for a in "$@"; do case "$a" in --quiet) quiet=true ;; --speak) speak=true ;; --deliver) deliver=true ;; esac; done
   local out="$R/tasks/.brief-$(date +%Y-%m-%d).md"
-  local ready=0 blocked=0 decide=0
+  local ready=0 blocked=0 decide=0 proposed=0 looks_done=0
   for f in "$OPEN"/*.md; do
     [ -e "$f" ] || continue
     case "$(_fm "$f" status)" in
       ready) ready=$((ready+1));; blocked) blocked=$((blocked+1));; needs-decision) decide=$((decide+1));;
+      proposed) proposed=$((proposed+1));; looks-done) looks_done=$((looks_done+1));;
     esac
   done
+
+  # The questions the owner owes an answer to, in his words, resolved once and
+  # reused by all three surfaces. t-0019 built a chaser in July and it never
+  # produced a single reminder while four things waited -- it turned out to be
+  # scoped to calendar events. This is the replacement, on the delivery path he
+  # has actually confirmed he reads.
+  local asks nask=0
+  asks="$(python3 "$R/scripts/lib/asks.py" --tsv 2>/dev/null)"
+  [ -n "$asks" ] && nask=$(printf '%s\n' "$asks" | grep -c . )
 
   if $speak || $deliver; then
     local h g s pl; h=$(date +%H); g="Hello"
@@ -617,36 +692,72 @@ cmd_brief() {
     day=$(python3 "$R/scripts/google/gcalendar.py" today 2>/dev/null)
     dayline1=$(printf '%s' "$day" | head -1)
     s="$g."
+    # The question LEADS -- ahead of the calendar. "Something you actually read
+    # tells you, in plain words, the question it is waiting on" is the whole
+    # finish line of t-0036; putting it after the day's shape buries it.
+    if [ "$nask" -gt 0 ]; then
+      local q1 a1
+      q1=$(printf '%s\n' "$asks" | head -1 | cut -f4)
+      a1=$(printf '%s\n' "$asks" | head -1 | cut -f2)
+      s="$s First: a question has been waiting $a1 days. $q1"
+      [ "$nask" -gt 1 ] && s="$s And $((nask-1)) more behind it."
+    fi
     [ -n "$dayline1" ] && s="$s $dayline1"
-    if [ "$decide" -gt 0 ]; then s="$s $decide decision$pl waiting on you."
+    if [ "$decide" -gt 0 ] && [ "$nask" -eq 0 ]; then s="$s $decide decision$pl waiting on you."
     elif [ "$ready" -gt 0 ]; then s="$s $ready ready to run."
-    elif [ -z "$dayline1" ]; then s="$s All systems nominal. Nothing waiting."; fi
+    elif [ "$nask" -eq 0 ] && [ -z "$dayline1" ]; then s="$s All systems nominal. Nothing waiting."; fi
     # detached so the audio survives SwiftBar/launchd killing our process group
-    if $speak; then . "$R/scripts/lib/detach.sh"; nb_detach "$R/scripts/speak.sh" "$s"; fi
+    if $speak; then
+      if [ -n "${NB_BRIEF_DRYRUN:-}" ]; then printf 'SPEAK> %s\n' "$s"
+      else . "$R/scripts/lib/detach.sh"; nb_detach "$R/scripts/speak.sh" "$s"; fi
+    fi
     if $deliver; then
-      local msg="$g."
-      [ -n "$day" ] && msg="$msg"$'\n'"$day"
-      if [ "$decide" -gt 0 ]; then
-        msg="$msg"$'\n'"Waiting on you:"
-        for f in "$OPEN"/*.md; do
-          [ -e "$f" ] || continue
-          [ "$(_fm "$f" status)" = "needs-decision" ] && msg="$msg"$'\n'"• $(_fm "$f" title | sed 's/^"//;s/"$//')"
-        done
+      local msg="" tg
+      # Telegram is rate-limited on purpose: first ping when a question crosses
+      # two days, then at most weekly. The brief itself lists everything overdue
+      # every morning -- a phone that buzzes daily about the same four questions
+      # gets muted, and then the chaser has silently stopped working again.
+      tg="$(NB_BRIEF_DRYRUN="${NB_BRIEF_DRYRUN:-}" python3 "$R/scripts/lib/asks.py" --telegram 2>/dev/null)"
+      if [ -n "$tg" ]; then
+        msg="⏳ Waiting on your answer:"$'\n'"$tg"$'\n\n'"Reply here, or run: nb decide"$'\n\n'
       fi
-      "$R/scripts/deliver.sh" "nathanbot — brief" "$msg" >/dev/null 2>&1 || true
+      msg="$msg$g."
+      [ -n "$day" ] && msg="$msg"$'\n'"$day"
+      # Short form only. t-0027's full section alone is ~1000 chars; four of them
+      # would blow Telegram's 4096-char body and deliver.sh fails silently
+      # (curl -sf ... || true). The full text lives in the brief markdown file.
+      if [ "$nask" -gt 0 ] && [ -z "$tg" ]; then
+        msg="$msg"$'\n'"($nask question(s) still waiting — see the brief, or: nb decide)"
+      fi
+      if [ -n "${NB_BRIEF_DRYRUN:-}" ]; then printf 'DELIVER> %s\n' "$msg"
+      else "$R/scripts/deliver.sh" "nathanbot — brief" "$msg" >/dev/null 2>&1 || true; fi
     fi
   fi
 
   { printf "# Brief — %s\n\n" "$(date '+%A %d %B %Y')"
-    printf "## Queue\n%s ready · %s blocked · %s awaiting your decision · %s untriaged\n\n" \
-      "$ready" "$blocked" "$decide" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)"
 
-    if [ "$decide" -gt 0 ]; then
-      printf "## Waiting on you\n"
+    # FIRST section, above the queue counts. Prints nothing when nothing is
+    # overdue, so the heading only ever appears when there is a real question.
+    # Replaces the old "## Waiting on you" block, which listed needs-decision
+    # only -- of which there are currently zero, so it rendered empty every day
+    # while four questions sat unanswered.
+    python3 "$R/scripts/lib/asks.py" --md 2>/dev/null
+
+    printf "## Queue\n%s ready · %s proposed · %s blocked · %s awaiting your decision · %s untriaged\n\n" \
+      "$ready" "$proposed" "$blocked" "$decide" "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)"
+
+    # After the questions, before the queue: confirming a finish is a chore, not
+    # the thing that should lead. The evidence comes with it so the confirmation
+    # is a judgement rather than a trust exercise.
+    if [ "$looks_done" -gt 0 ]; then
+      printf "## Looks finished — confirm?\n"
       for f in "$OPEN"/*.md; do
         [ -e "$f" ] || continue
-        [ "$(_fm "$f" status)" = "needs-decision" ] && printf -- "- **%s** %s\n" "$(_fm "$f" id)" "$(_fm "$f" title)"
-      done; printf "\n"
+        [ "$(_fm "$f" status)" = "looks-done" ] || continue
+        printf -- "- **%s** %s\n" "$(_fm "$f" id)" "$(_fmv "$f" title)"
+        sed -n '/^\*\*Looks done/,$p' "$f" | sed '1d;/^$/d;s/^/  /'
+      done
+      printf "\n  → \`nb decide\` to confirm or send it back\n\n"
     fi
 
     printf "## Top of queue\n"
@@ -692,9 +803,56 @@ cmd_brief() {
   } > "$out"
 
   $quiet || cat "$out"
-  command -v osascript >/dev/null 2>&1 && osascript -e "display notification \"$ready ready · $decide need you\" with title \"nathanbot brief\"" 2>/dev/null
+  # COUNTS ONLY, never question text: this interpolates straight into an
+  # AppleScript string literal, so a question containing a quote would break it
+  # or worse. deliver.sh does this properly via system attribute; this one-liner
+  # does not, so nothing free-form goes near it.
+  command -v osascript >/dev/null 2>&1 && osascript -e "display notification \"$nask waiting on you · $ready ready\" with title \"nathanbot brief\"" 2>/dev/null
   printf "\n${c_d}saved: %s${c_0}\n" "${out/#$HOME/\~}"
   return 0
+}
+
+# selfapply's allowlist is a PATH filter -- it cannot see that an edit inside
+# tasks/open/ changed `status:` to something this pass was never allowed to set.
+# Evolve could already write `status: done` on any open task today; only the
+# prompt stopped it. Now that the prompt actively authorises a status write, the
+# prompt alone is not enough. looks-done is the only value it may set.
+_evolve_status_guard() {
+  local f bad=0 now
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in tasks/open/*) ;; *) continue ;; esac
+    [ -f "$R/$f" ] || continue
+    # Hands off anything that was ALREADY dirty when the pass began -- that is
+    # the owner's uncommitted work, not this pass's. sa_commit has honoured this
+    # from the start via SA_PRE; a guard that skipped the check would revert his
+    # edits and, for an untracked file, delete it outright. Tested the hard way.
+    _sa_was_dirty "$f" && continue
+    now=$(grep -m1 '^status:' "$R/$f" | sed 's/^status:[[:space:]]*//')
+
+    # (a) statuses evolve may never write, on a new file or an old one. Checked
+    #     from the FILE, not the diff: a brand-new task file is untracked, and
+    #     `git diff` says nothing at all about untracked paths -- so a diff-only
+    #     guard waves every new file straight through.
+    case "$now" in
+      done|failed|running)
+        printf '  reverting %s — evolve may not set status: %s\n' "$f" "$now" >&2
+        git -C "$R" checkout -q -- "$f" 2>/dev/null || rm -f "$R/$f"
+        bad=1; continue ;;
+    esac
+
+    # (b) on a TRACKED task, the only status it may change anything TO is
+    #     looks-done. Creating a proposal with ready/needs-decision is fine;
+    #     reaching into an existing task and relabelling it is not.
+    if git -C "$R" ls-files --error-unmatch "$f" >/dev/null 2>&1 \
+       && git -C "$R" diff -- "$f" | grep -q '^+status:' \
+       && [ "$now" != "looks-done" ]; then
+      printf '  reverting %s — evolve may only change an existing task to looks-done\n' "$f" >&2
+      git -C "$R" checkout -q -- "$f" 2>/dev/null || rm -f "$R/$f"
+      bad=1
+    fi
+  done < <(git -C "$R" status --porcelain -uall | sed 's/^...//')
+  return $bad
 }
 
 # ── evolve: self-improvement. PROPOSES, never self-applies. ──────────────────
@@ -705,6 +863,16 @@ cmd_evolve() {
   [ -n "${NB_OPERATOR:-}" ] && apply=false
   local tel="$R/tasks/.telemetry.jsonl"
 
+  # ── MUTUAL EXCLUSION — must wrap BOTH halves of this function ──────────────
+  # Not just --apply. The propose half below writes new tasks/open/t-*.md, and
+  # learn's allowlist is the two model-of-the owner pages, so learn would classify
+  # those proposals as violations and rm -f them (untracked -> git checkout
+  # fails -> the rm fallback in sa_commit). On 2026-07-27 t-0035..t-0039
+  # survived only because learn happened to finish 4 minutes before they landed.
+  # sa_release is also called by _nb_on_exit, so a crash cannot wedge the lock.
+  . "$R/scripts/lib/selfapply.sh"
+  sa_begin evolve || return $SA_EX_LOCKED
+
   # ── SAFE-TIER AUTO-APPLY (bounded · reversible · never pushed) ─────────────
   # Security: the system may edit ONLY its own knowledge (wiki) and tidy task
   # titles. Code, config, capabilities, AGENTS.md, secrets, and anything outside
@@ -713,14 +881,30 @@ cmd_evolve() {
   # tree no longer disables the weekly self-improvement pass. Violations revert
   # file-by-file; staged content is secret-scanned; commits are local only.
   if $apply; then
-    . "$R/scripts/lib/selfapply.sh"
-    sa_begin
     printf "${c_b}Applying safe-tier self-improvements...${c_0}\n"
     NB_JOB=evolve-apply "$CLAUDE" -p "You are nathanbot improving ITSELF. Apply ONLY safe-tier fixes, now.
 
 YOU MAY EDIT ONLY THESE:
 - $R/wiki/pages/*.md, $R/wiki/index.md, $R/wiki/log.md   (fix stale/wrong/orphaned knowledge)
-- $R/tasks/open/*.md                                      (fix a typo'd title / obvious mislabel ONLY)
+- $R/tasks/open/*.md    (fix a typo'd title / obvious mislabel, AND flag finished work — below)
+
+FLAGGING FINISHED WORK — the only status change you may ever make:
+If you can cite SPECIFIC, CHECKABLE evidence that an open task's own \"Done when\" condition
+is ALREADY satisfied — a commit hash, a file that now exists or is now gone, an audit line
+that now passes — then for that task ONLY:
+  1. set its frontmatter to exactly: status: looks-done
+  2. append to the END of the body, in exactly this shape:
+
+     **Looks done — $(date +%Y-%m-%d) (evolve)**
+     - <one line of evidence, naming the commit / file / audit line>
+     - <a second line if there is one>
+
+  3. change nothing else in that file.
+
+You may NOT move a file into $R/tasks/done/, delete anything, or set any other status value
+on any task. the owner confirms with 'nb decide'. A wrong call costs him a glance; closing a
+live task would cost him the task. If your evidence is inference rather than a citation, do
+NOT flag it — mention it in your summary instead and let him judge.
 
 ABSOLUTE BOUNDS — never, for any reason:
 - Do NOT touch code ($R/bin, $R/scripts, $R/server), config ($R/config/*.json), capabilities,
@@ -736,12 +920,22 @@ Print one line per edit." \
       --permission-mode acceptEdits \
       --allowedTools "Read" "Edit" "Write" "Grep" "Glob" 2>&1 | tail -20
 
-    # GUARD — selfapply keeps only allowlisted NEW changes, reverts violations
-    # per-file (never the owner's pre-existing edits), secret-scans, commits locally.
+    # GUARD — content check first (only looks-done may be written), then
+    # selfapply keeps only allowlisted NEW changes, reverts violations per-file
+    # (never the owner's pre-existing edits), secret-scans, commits locally.
+    _evolve_status_guard || true
     sa_commit '^(wiki/|tasks/open/)' "auto-evolve: safe-tier self-improvement
 
 Applied by 'nb evolve --apply' (wiki/task hygiene only). Not pushed.
-Reversible: git revert HEAD" || printf "${c_d}(nothing applied)${c_0}\n"
+Reversible: git revert HEAD"
+    # These used to share one `||` branch, so a secret-scan revert and a failed
+    # commit both printed "(nothing applied)" -- the same false-green this pass
+    # exists to remove.
+    case $? in
+      1) printf "${c_d}(nothing applied)${c_0}\n" ;;
+      2) printf "${c_r}evolve: pass REVERTED — secret-looking content in the edits${c_0}\n" >&2 ;;
+      3) printf "${c_r}evolve: commit FAILED — edits are stranded in the working tree${c_0}\n" >&2 ;;
+    esac
   fi
 
   printf "${c_b}Analyzing own usage and proposing deeper improvements...${c_0}\n"
@@ -792,6 +986,7 @@ Then print a short summary of what you proposed and why." \
     --allowedTools "Read" "Grep" "Glob" "Write" 2>&1 | tail -35
 
   printf "\n${c_g}proposals created${c_0} — review with 'nb status', they're all needs-decision\n"
+  sa_release
 }
 
 # ── scout: find new tools/systems worth adopting ─────────────────────────────
@@ -872,20 +1067,64 @@ cmd_tidy() {
 _telemetry() {
   local cmd="${1:-none}" started="$2" rc="$3"
   local dur=$(( $(date +%s) - started ))
+  local out="${NB_TELEMETRY_FILE:-$R/tasks/.telemetry.jsonl}"
   # rotation: append-only logs must not grow forever. >5MB -> keep one .old generation.
   local jf
   for jf in "$R/tasks/.telemetry.jsonl" "$R/tasks/.decisions.jsonl" "$R/tasks/.feedback.jsonl"; do
     [ -f "$jf" ] && [ "$(stat -f %z "$jf" 2>/dev/null || echo 0)" -gt 5242880 ] \
       && mv "$jf" "$jf.old" 2>/dev/null
   done
-  printf '{"ts":"%s","cmd":"%s","dur_s":%s,"rc":%s,"open":%s,"inbox":%s}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cmd" "$dur" "$rc" \
+  # rc has been written on every line since 2026-07-21 and read by NOTHING, so
+  # `nb usage` could not answer the one question it was being run to answer.
+  # rc_means records what a non-zero exit MEANT -- absent means a real failure.
+  # "v":2 is the honesty marker: without it a reader cannot tell an old line's
+  # rc=1 apart, and must say so rather than guess from a command-name list.
+  local extra=""
+  [ "$rc" -ne 0 ] && [ -n "${_RC_MEANS:-}" ] && extra=",\"rc_means\":\"$_RC_MEANS\""
+  [ -n "${_SUB:-}" ] && extra="$extra,\"sub\":\"$_SUB\""
+  printf '{"ts":"%s","v":2,"cmd":"%s","dur_s":%s,"rc":%s%s,"open":%s,"inbox":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cmd" "$dur" "$rc" "$extra" \
     "$(ls "$OPEN"/*.md 2>/dev/null | wc -l | tr -d ' ')" \
     "$(grep -c '^- \[ \]' "$INBOX" 2>/dev/null; true)" \
-    >> "$R/tasks/.telemetry.jsonl" 2>/dev/null
+    >> "$out" 2>/dev/null
 }
 _T0=$(date +%s); _CMD="${1:-help}"
-trap '_telemetry "$_CMD" "$_T0" "$?"' EXIT
+_RC_MEANS=""      # set by the dispatch arms below where non-zero is not a failure
+
+# `nb mail read` records cmd="mail", so a permission refusal and a genuine crash
+# both land as `mail rc=1` and cannot be told apart. Record the sub-verb -- but
+# ONLY for container commands, and ONLY a bare lowercase word. `nb add "call the
+# accountant about the invoice"` must never write the owner's text into a log that
+# evolve feeds to a model. tr -cd is a whitelist: nothing surviving it can break
+# the JSON either.
+_SUB=""
+case "$_CMD" in
+  mail|cal|crm|wiki|project|proj|profile|perms|permissions|schedule)
+    case "${2:-}" in
+      [a-z]*) [ "${#2}" -le 20 ] && _SUB="$(printf '%s' "$2" | tr -cd 'a-z0-9_-')" ;;
+    esac ;;
+esac
+
+# ONE exit handler. selfapply.sh must never set its own EXIT trap on this path --
+# it would replace this one and telemetry for `nb evolve` would stop without any
+# symptom, which is the exact bug class the self-improvement fixes are about.
+# `local rc=$?` MUST stay the first statement: anything before it clobbers $?.
+_nb_on_exit() {
+  local rc=$?
+  type sa_release >/dev/null 2>&1 && sa_release   # no-op unless selfapply was sourced
+  # 75 = a self-mod pass stood down because the other one held the lock. It did
+  # nothing, but nothing is broken -- that is not a crash and must not read as one.
+  [ "$rc" -eq 75 ] && _RC_MEANS=skipped
+  _telemetry "$_CMD" "$_T0" "$rc"
+}
+trap _nb_on_exit EXIT
+# route signals through EXIT so the lock is released on Ctrl-C / launchd SIGTERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# `nb next | head -5` closes the pipe under us. Without this the shell reports a
+# plain 1, indistinguishable from a real failure, and the failure check fires on
+# ordinary piping. 141 = 128 + SIGPIPE, which classifies as interrupted.
+trap 'exit 141' PIPE
 
 case "${1:-}" in
   add)    shift; cmd_add "$@" ;;
@@ -897,14 +1136,19 @@ case "${1:-}" in
   status) cmd_status ;;
   plan)   shift; cmd_plan "$@" ;;
   plan-day|planday|day) shift; cmd_plan_day "$@" ;;
-  run)    shift; cmd_run "$@" ;;
+  run)    _RC_MEANS=retired; shift; cmd_run "$@" ;;
   done)   shift; cmd_done "$@" ;;
   decide) shift; cmd_decide "$@" ;;
   audit)  cmd_audit ;;
   usage)    shift; python3 "$R/scripts/usage.py" "$@" ;;
   writeback|wb) shift; "$R/scripts/writeback.sh" "$@" ;;
   recall)   shift; python3 "$R/scripts/recall.py" "$@" ;;
-  stale)  shift; python3 "$R/scripts/stale.py" "$@" ;;
+  # stale exits 3 when it FINDS drift — a result, not a crash. It still exits 1
+  # on a real traceback, and that must stay legible as a failure, so only 3 is
+  # relabelled. See the note at the bottom of scripts/stale.py.
+  stale)  shift; python3 "$R/scripts/stale.py" "$@"
+          _rc=$?; [ "$_rc" -eq 3 ] && _RC_MEANS=finding
+          exit "$_rc" ;;
   brief)  shift; cmd_brief "$@" ;;
   evolve) shift; cmd_evolve "$@" ;;
   scout)  cmd_scout ;;
@@ -949,6 +1193,9 @@ case "${1:-}" in
               *) python3 "$R/scripts/google/gmail.py" "$@" ;;
             esac ;;
   cal)      shift; python3 "$R/scripts/google/gcalendar.py" "$@" ;;
+  crm)      shift; python3 "$R/scripts/google/sheets.py" "$@" ;;
   ""|-h|--help|help) usage ;;
-  *) die "unknown command: $1  (try: nb help)" ;;
+  # a typo, or a command that was removed — 10 of the 52 historical non-zero
+  # lines landed here and were indistinguishable from a crash
+  *) _RC_MEANS=unknown-verb; die "unknown command: $1  (try: nb help)" ;;
 esac
