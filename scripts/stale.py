@@ -42,7 +42,11 @@ HOME = os.path.expanduser("~")
 SCAN_DIRS = ["wiki", "career", "shared-memory", "prompts", "hermes",
              "public", "docs", "capabilities",
              "workspace", "workspace-admin", "workspace-coding",
-             "workspace-creative", "workspace-research"]
+             "workspace-creative", "workspace-research",
+             # _proposed/ and _refine/ only. The 10 vendored upstream skills
+             # document Cloudflare's layout, not this machine's, and scanning
+             # them would produce dozens of false "missing path" findings.
+             "skills/_proposed", "skills/_refine"]
 # .env.example is scanned because it is documentation that gets acted on: it told
 # readers "real secrets live in ~/.secrets/ai-hub.env" for as long as that file
 # did not exist. A doc pointing at a nonexistent secrets file is the same failure
@@ -71,7 +75,8 @@ PATH_IGNORE = re.compile(
 # Only match things that are unambiguously filesystem paths:
 #   ~/dir/thing        (home-anchored, at least one slash below ~)
 #   knownrepodir/thing (anchored to a directory that actually exists in the repo)
-REPO_DIRS = r"wiki|career|scripts|config|bin|server|prompts|tasks|shared-memory|hermes|public"
+REPO_DIRS = (r"wiki|career|scripts|config|bin|server|prompts|tasks|shared-memory"
+             r"|hermes|public|skills|capabilities")
 # The backtick branch stops at a space instead of requiring the closing backtick,
 # because docs backtick whole COMMANDS: `scripts/setup-fallback.sh install`. The
 # old pattern needed the backticks to wrap a bare path, and the plain branch's
@@ -200,6 +205,13 @@ def main():
                 # after being deleted.
                 if rel.startswith("public/") and tok.startswith("~/"):
                     continue
+                # A skill documents the project it is ABOUT, not nathanbot. A
+                # per-project release skill correctly names `scripts/demo.sh`,
+                # which lives in THAT repo. Checking those against this root reports a
+                # missing path for every accurate skill, which is how a check
+                # gets ignored. Marker integrity is audit.sh's job instead.
+                if rel.startswith("skills/"):
+                    continue
                 if " " in tok and not tok.startswith("~/"):
                     continue
                 if not (tok.startswith("~/") or "/" in tok):
@@ -207,6 +219,16 @@ def main():
                 if tok.endswith("/"):
                     tok = tok[:-1]
                 target = resolve(tok)
+                # public/ is the template for a DIFFERENT repo, and
+                # release-public.sh rewrites some paths on the way out (notably
+                # wiki/pages/owner.md -> owner.md). Resolving its repo-relative
+                # claims against this root reported a permanent false positive
+                # for a line that is correct where it actually ships.
+                if not os.path.exists(target) and rel.startswith("public/"):
+                    pub = os.environ.get("NB_PUBLIC_REPO",
+                                         os.path.join(HOME, "Projects", "nathanbot-harness"))
+                    if os.path.exists(os.path.join(pub, tok)):
+                        continue
                 if not os.path.exists(target):
                     findings.append((rel, i, "missing path", tok))
 

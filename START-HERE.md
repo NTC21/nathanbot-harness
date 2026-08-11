@@ -64,7 +64,7 @@ Better voices, still optional:
 ## 5. Make it ambient
 
 ```bash
-nb schedule install     # 07:30 brief · 22:00 digest · watcher every 2h · weekly learning
+nb schedule install     # 07:30 brief · 22:35 dream · watcher every 2h · weekly learning
 nb schedule status
 ```
 

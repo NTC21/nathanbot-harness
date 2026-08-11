@@ -35,8 +35,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 _JOB_SIGNATURES = [
     ("You are nathanbot analyzing ITSELF", "evolve"),
     ("You are nathanbot improving ITSELF", "evolve"),
-    ("You are nathanbot building a better model of NATHAN", "learn"),
-    ("You are nathanbot updating its model of NATHAN", "learn"),
+    ("You are nathanbot building a better model of THE OWNER", "learn"),
+    ("You are nathanbot updating its model of THE OWNER", "learn"),
     ("You are triaging", "triage"),
     ("You are nathanbot processing", "digest"),
     ("You are the owner's news scout", "news"),
@@ -45,6 +45,9 @@ _JOB_SIGNATURES = [
     ("Decompose this goal", "plan"),
     ("the owner wants to durably remember", "remember"),
     ("You are interviewing the owner", "discuss"),
+    ("You are nathanbot dreaming", "dream"),
+    ("You are nathanbot noticing a repeated workflow", "skills"),
+    ("You are nathanbot refining a skill", "skills-refine"),
     ("You are nathanbot —", "operator"),
     ("You are nathanbot talking", "operator"),
 ]
@@ -236,6 +239,74 @@ def summarize(path):
                 if fp:
                     s["files"].append(fp)
     return s
+
+
+def user_turns(path):
+    """Every user-authored turn in one session, with enough metadata to tell
+    the owner's typing apart from hook injections and tool results.
+
+    summarize() keeps only first_user[:400]; recall.py indexes assistant turns
+    only. the owner's own words are in neither, and that is where the durable
+    facts are. Filters NOTHING — policy belongs to the caller (dream_eyes.py),
+    so this file stays the single reader of the transcripts.
+
+    origin.kind == "human" is the CLI's own marker and is exact, but it only
+    appears from 2026-07 onward: measured 1697 human vs 16403 missing across
+    the corpus. Callers must treat a missing origin as "unknown", never as
+    "not human", or they lose most of the history.
+    """
+    sid = os.path.basename(path)[:-6]
+    for line in _lines(path):
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if d.get("type") != "user" or d.get("isMeta"):
+            continue
+        m = d.get("message")
+        if not isinstance(m, dict):
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            text = c
+        elif isinstance(c, list):
+            # tool_result blocks are the tool talking back, never the owner
+            text = "\n".join(b.get("text") or "" for b in c
+                             if isinstance(b, dict) and b.get("type") == "text")
+        else:
+            continue
+        if not text.strip():
+            continue
+        o = d.get("origin")
+        yield {"text": text,
+               "ts": d.get("timestamp") or "",
+               "origin": o.get("kind") if isinstance(o, dict) else None,
+               "prompt_source": d.get("promptSource"),
+               "entrypoint": d.get("entrypoint") or "",
+               "cwd": d.get("cwd") or "",
+               "session": sid}
+
+
+def tool_calls(path):
+    """Every assistant tool_use in one session as (name, input_dict).
+
+    summarize() walks the same blocks but keeps only the name and the
+    Write/Edit paths. skill_eyes.py needs the inputs themselves — the bash
+    command text and the Skill tool's `skill` argument.
+    """
+    for line in _lines(path):
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if d.get("type") != "assistant":
+            continue
+        m = d.get("message")
+        if not isinstance(m, dict):
+            continue
+        for b in m.get("content") or []:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                yield b.get("name") or "?", (b.get("input") or {})
 
 
 def _lines(path):

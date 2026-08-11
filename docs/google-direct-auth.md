@@ -1,13 +1,13 @@
 # Direct Google integration — design
 
-Bypasses claude.ai connectors (one account per service) so all of your identities work
-simultaneously, from any harness, with credentials in your own vault.
+Bypasses claude.ai connectors (one account per service) so all of the owner's identities work
+simultaneously, from any harness, with credentials in his own vault.
 
 ## Decisions (locked 2026-07-21)
 | Decision | Choice | Why |
 |---|---|---|
 | Publishing status | **In production** | Testing mode expires refresh tokens after 7 days — would silently kill cron jobs |
-| Scopes | **gmail.modify** + calendar | Labeling/triage already assumed by the business-ops capability |
+| Scopes | **gmail.modify** + calendar | Labeling/triage already assumed by the business-ops skills |
 | Client type | Desktop app (loopback) | No hosted redirect needed |
 | Domains | Regular Gmail + custom domain | No Workspace admin step |
 
@@ -20,7 +20,7 @@ https://www.googleapis.com/auth/calendar
 Scopes bake into every token — changing them means re-consenting every account.
 
 ## Accounts vs aliases
-`you@company.com` and `you@product.com` are custom-domain addresses on regular
+`you@your-business.com` and `you@your-startup.com` are custom-domain addresses on regular
 Gmail, which usually means they are **send-as aliases**, not separate Google accounts.
 
 `auth.py login` detects which:
@@ -35,7 +35,7 @@ account. Callers don't need to know which.
 ~/.secrets/google/
   client_secret.json        # OAuth client (600)
   personal.json             # refresh token
-  work.json
+  coaching.json
   <key>.json                # one per REAL account
   aliases.json              # alias -> owning account map
 ```
@@ -49,7 +49,7 @@ Directory 700, files 600. Never in git.
   makes consenting as the wrong logged-in account easy, and it fails silently forever after.
 - Every command prints `Acting as: <email>` before doing anything.
 
-## Setup (~15 min, one time)
+## Setup (the owner, ~15 min, one time)
 1. console.cloud.google.com -> new project "nathanbot"
 2. Enable **Gmail API** and **Google Calendar API**
 3. OAuth consent screen -> External -> **Publish (In production)**

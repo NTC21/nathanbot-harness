@@ -1,0 +1,6 @@
+{
+  "_comment": "Defaults for nb plan-day. Env vars override these; these override the built-ins.",
+  "work_start": "09:00",
+  "work_end": "18:00",
+  "block_min": 90
+}

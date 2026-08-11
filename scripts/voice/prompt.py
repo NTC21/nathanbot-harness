@@ -2,6 +2,7 @@
 (server/server.py) and the voice daemon (scripts/voice/jarvis.py): the prompt AND
 the tool scope, so the two channels cannot drift apart. The prompt template lives
 in prompts/operator.md."""
+import json
 import os
 import sys
 from datetime import datetime
@@ -37,6 +38,56 @@ def _bounded(path, cap):
         return ""
 
 
+def _identity_block(root):
+    """Render the sending-identity rules FROM config/accounts.json at call time.
+
+    prompts/operator.md used to carry this as a static line naming personal as the only
+    account authorized to send. accounts.json has recorded a business identity as live
+    and its `_current_reality` ends "Never downgrade a business identity to personal" — so
+    the static line instructed the operator to perform the exact downgrade the registry
+    forbids. That is AGENTS.md:56-61's four-copies failure recurring one layer up, which is
+    why this is generated rather than restated.
+
+    FAILS CLOSED. On any read or parse problem the operator is told to read the registry
+    itself or stop. It is never handed a hardcoded roster — a stale roster is the bug.
+    """
+    path = os.path.join(root, "config", "accounts.json")
+    stop = (f"- SENDING IDENTITY: the identity registry could not be read. Read {path} "
+            f"before any outbound action, or STOP. Do not assume which account may send.")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        accounts = data["accounts"]
+        live, held = [], []
+        for key, acct in accounts.items():
+            entry = (int(acct.get("rank", 99)), key, str(acct["email"]))
+            (live if acct.get("connected") is True else held).append(entry)
+        if not live:
+            # No authorized account is not a roster to render — it is a full stop.
+            return stop
+        live.sort()
+        held.sort()
+        lines = ["- SENDING IDENTITY — generated from config/accounts.json, the only source",
+                 "  of truth. Do not trust any roster quoted elsewhere, including this prompt",
+                 "  in an earlier turn."]
+        for rank, key, email in live:
+            use = str(accounts[key].get("use_for", "")).strip()
+            lines.append(f"    AUTHORIZED: {email}  (key `{key}`, rank {rank})"
+                         + (f" — {use}" if use else ""))
+        for rank, key, email in held:
+            lines.append(f"    NOT AUTHORIZED: {email}  (key `{key}`, rank {rank}) — if the "
+                         f"task calls for this identity, STOP and say so.")
+        for rule in data.get("hard_rules", []):
+            if str(rule).strip():
+                lines.append(f"    {str(rule).strip()}")
+        reality = str(data.get("_current_reality", "")).strip()
+        if reality:
+            lines.append(f"    {reality}")
+        return "\n".join(lines)
+    except Exception:
+        return stop
+
+
 def build_operator_prompt(root, convo, msg, channel="chat"):
     with open(os.path.join(root, "prompts", "operator.md")) as f:
         tpl = f.read()
@@ -60,6 +111,7 @@ def build_operator_prompt(root, convo, msg, channel="chat"):
             .replace("{{USER}}", user)
             .replace("{{MEMORY}}", memory)
             .replace("{{NOW}}", now_str)
+            .replace("{{IDENTITY}}", _identity_block(root))
             .replace("{{CONVO}}", convo or "(none)")
             .replace("{{MSG}}", msg)
             .replace("{{CHANNEL_NOTE}}", _NOTES.get(channel, "")))

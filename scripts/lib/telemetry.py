@@ -24,6 +24,12 @@ SCHEMA_V = 2
 # rc 126 = found but not executable · 127 = not found · 128+n = killed by signal n
 _SHELL = {126: "unrunnable", 127: "unrunnable"}
 _SIGNAL_MIN = 128          # 130 Ctrl-C · 141 SIGPIPE · 143 SIGTERM
+# argparse's own exit code for a bad invocation. Everything `nb` dispatches to is
+# either an argparse script or agrees with it by hand (scripts/wiki.sh, and
+# _usage() in scripts/google/gcalendar.py). scripts/release-public.sh also exits
+# 2 on a real failure, but it is not reachable through `nb`, so it never reaches
+# this file -- check that before wiring a new caller that uses 2 to mean broken.
+_USAGE = 2
 
 
 def classify(row):
@@ -36,6 +42,14 @@ def classify(row):
     means = row.get("rc_means")
     if means:
         return means                      # finding | unknown-verb | retired | skipped
+    if rc == _USAGE:
+        # The command ran and rejected the invocation: a missing --account, an
+        # unparseable flag. Nothing is broken, so counting it as a failure makes
+        # the number climb every time a verb is typed wrong -- and a count that
+        # rises when nothing is wrong is one that gets ignored, which is the
+        # whole reason this module exists. Checked BEFORE _SHELL so the meaning
+        # is stated once here rather than at 19 `die` sites.
+        return "usage"
     if rc in _SHELL:
         return _SHELL[rc]
     if rc >= _SIGNAL_MIN:
@@ -56,6 +70,7 @@ LABEL = {
     "retired":      ("retired", "the command exists only to say it is gone"),
     "skipped":      ("stood down", "another pass held the lock — nothing lost"),
     "finding":      ("found", "non-zero on purpose — it found something"),
+    "usage":        ("bad invocation", "the command ran and rejected the arguments"),
     "unclassified": ("unclassified", "logged before exits were labelled"),
 }
 
@@ -65,7 +80,7 @@ LABEL = {
 REAL_FAILURES = ("crashed", "unrunnable")
 
 # Worst first, so the report leads with what matters.
-ORDER = ("crashed", "unrunnable", "unknown-verb", "interrupted",
+ORDER = ("crashed", "unrunnable", "unknown-verb", "usage", "interrupted",
          "retired", "skipped", "finding", "unclassified")
 
 

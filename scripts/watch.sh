@@ -18,10 +18,16 @@ h=$(date +%H)
 if [ "$h" -ge 23 ] || [ "$h" -lt 7 ]; then $dry || exit 0; fi
 
 seen() { [ -f "$STATE/$1" ]; }
+# seen(), but only counting marks younger than $2 days — the re-fire clock for
+# keys whose interval is longer than the daily reaper below. mark() truncates,
+# which refreshes mtime, so the mark's own timestamp is the clock.
+seen_within() { [ -f "$STATE/$1" ] && [ -z "$(find "$STATE/$1" -mtime +"$2" 2>/dev/null)" ]; }
 mark() { $dry || : > "$STATE/$1"; }
 # expire day-old marks, EXCEPT the weekly dirty-repo ones — a 1-day expiry on a
 # week-scoped key would just re-fire the same repo every day
 find "$STATE" -type f -mtime +1 ! -name 'dirty-*' -delete 2>/dev/null || true
+# dirty-* marks are gated by seen_within, not by this reaper; +8 only collects
+# marks for repos that have gone away entirely.
 find "$STATE" -type f -mtime +8 -name 'dirty-*' -delete 2>/dev/null || true
 
 findings=()
@@ -70,6 +76,7 @@ fi
 #   - at most DIRTY_MAX repos per run, and once a week per repo, not once a day
 dirty_days="${NB_DIRTY_DAYS:-3}"
 dirty_max="${NB_DIRTY_MAX:-2}"
+dirty_every="${NB_DIRTY_EVERY_DAYS:-7}"   # re-fire interval per repo
 dirty_n=0
 for d in "$CODE_ROOT"/*/; do
   [ "$dirty_n" -ge "$dirty_max" ] && break
@@ -80,8 +87,14 @@ for d in "$CODE_ROOT"/*/; do
   [ -n "$last" ] || continue
   age=$(( ( $(date +%s) - last ) / 86400 ))
   [ "$age" -ge "$dirty_days" ] || continue
-  name=$(basename "$d"); key="dirty-$name-$(date +%Y-%V)"   # %V = ISO week
-  seen "$key" || {
+  # No date in the key. It used to carry $(date +%Y-%V), and %V is an ISO week
+  # number: a repo flagged on a Sunday — the last day of an ISO week — got a
+  # brand-new key on Monday and fired again the next day, against the stated
+  # "once a week per repo" above. (%Y paired with %V was a second bug of the same
+  # kind; the ISO week-year is %G, so the key also broke across New Year.) The
+  # interval is now the mark file's own mtime.
+  name=$(basename "$d"); key="dirty-$name"
+  seen_within "$key" "$dirty_every" || {
     findings+=("$name: $tracked uncommitted file(s), no commit in ${age}d")
     mark "$key"; dirty_n=$((dirty_n+1))
   }

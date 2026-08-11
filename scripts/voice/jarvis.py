@@ -208,7 +208,7 @@ def ask_operator(text):
     if r.returncode != 0 or not out:
         log(f"operator error rc={r.returncode}: {_strip_ansi(r.stderr)[:300]}")
         return "Something went wrong reaching Claude."
-    CONVO.append(f"NATHAN: {text}")
+    CONVO.append(f"THE OWNER: {text}")
     CONVO.append(f"NATHANBOT: {out}")
     return out
 

@@ -12,13 +12,14 @@
 #   nb groom [--apply]     archive stale tasks so the queue does not rot
 #   nb discuss ["topic"]   talk freely; it interviews you and absorbs what it learns
 #   nb today               open today's daily note in Obsidian (one shot)
-#   nb digest              turn today's daily Obsidian notes -> tasks + saved facts
+#   nb dream [--dry|--show] consolidate what you SAID into memory; proposes wiki edits
 #   nb watch [--dry]       ambient awareness — imminent meetings, dirty repos, VIP mail
 #
 #   nb brief [--speak]     daily briefing — what's next, waiting, health; --speak reads it aloud
 #   nb speak "<text>"      nathanbot says it out loud (Jarvis voice; NB_VOICE to change)
 #   nb jarvis [once|text]  hands-free voice — say "Jarvis", ask, it acts + replies aloud
 #   nb evolve [--apply]    improve the SYSTEM; --apply auto-fixes the safe tier (wiki/task hygiene)
+#   nb skills              propose a skill from workflows you keep repeating (never installs one)
 #   nb learn               improve the model of YOU — analyze your decisions, propose memory
 #   nb feedback "<note>"   tell it what to do differently — highest-priority learning signal
 #   nb remember "<fact>"   keep durable knowledge/rules in nathanbot (EVERY harness sees it)
@@ -32,6 +33,8 @@
 #   nb plan-day [--commit] propose calendar time-blocks for the top ready tasks
 #   nb cal <cmd>           calendar: agenda|today|list|search (writes are staged)
 #   nb news                morning news brief
+#   nb ideas [--deliver]   video ideas from what you actually did today (--save <n> appends
+#                          straight to the Content Ops Idea Bank tab; --drain, --bank)
 #   nb telegram            phone bridge — run the Telegram listener  (alias: tg)
 #   nb activity            what shipped across your repos recently  (alias: ship)
 #   nb project <cmd>       projects: new|add|list                    (alias: proj)
@@ -50,6 +53,8 @@
 #   nb profile <cmd>       capability layers per project (list|show|apply|sync|check)
 #   nb mail <cmd>          gmail: login|status|search|read|draft|send (--account required)
 #   nb crm <cmd>           sheets CRM: append|touch|due|show  (e.g. nb crm due <pipeline>)
+#   nb apps <cmd>          job search tracker: due|show  (overdue follow-ups + accepted-not-messaged)
+#   nb drive <cmd>         google docs/sheets: push|upload|pull|show|list (identity-checked)
 #   nb perms [set k lvl]   what Claude may do without asking (enforced in code)
 #
 set -uo pipefail
@@ -63,7 +68,7 @@ CLAUDE="$R/bin/claudew"
 
 # ── task-writing standard — injected into every generator so no task is ever cryptic.
 #    Full human doc: wiki/pages/task-style.md ────────────────────────────────────────────
-TASK_STYLE='WRITE EVERY TASK SO NATHAN NEVER HAS TO ASK "what is this?" — assume a tired
+TASK_STYLE='WRITE EVERY TASK SO THE OWNER NEVER HAS TO ASK "what is this?" — assume a tired
 non-engineer is reading it cold, months from now:
 - title: a plain-English sentence, NOT a code/file reference. A decision starts with "Decide:".
   If it needs info from the owner before it can move, say that in the title.
@@ -113,7 +118,7 @@ cmd_add() {
   printf "${c_g}captured${c_0}\n"
   # TASKS PAUSED: captures stay in the inbox; nothing auto-becomes a task.
   # Re-enable the task system by setting NB_TASKS_ON=1 (and restoring the operator
-  # + digest/scout jobs). Opt out separately with NB_NO_AUTOTRIAGE=1.
+  # + dream/scout jobs). Opt out separately with NB_NO_AUTOTRIAGE=1.
   if [ -n "${NB_TASKS_ON:-}" ] && [ -z "${NB_NO_AUTOTRIAGE:-}" ] && NB_CHECK=1 "$CLAUDE" >/dev/null 2>&1; then
     ( _autotriage ) >/dev/null 2>&1 &
   fi
@@ -639,6 +644,19 @@ cmd_new()    { "$R/scripts/new-project.sh" "$@"; }
 cmd_sync()   {
   # the chat/voice operator must not push to GitHub unattended
   [ -n "${NB_OPERATOR:-}" ] && die "nb sync is disabled for the operator — the owner runs it (or the nightly job does)"
+  # t-0043: the 23:00 push used to run with no coordination at all, so a memory pass
+  # still mid-write at 23:00 got its half-written files committed and pushed. It
+  # happened on 2026-08-01. The 25-minute gap after the 22:35 pass was a guess about
+  # how long an AI call takes, and it thins every time a pass is added.
+  #
+  # A SKIPPED PUSH IS WORSE THAN A LATE ONE -- other machines silently stop seeing
+  # changes -- so this waits for the lock but pushes regardless on timeout. That is
+  # `|| <warn>`, never `|| exit`, which is what separates it from the self-mod passes.
+  # No trap here on purpose: _nb_on_exit already calls sa_release, and a second EXIT
+  # trap would replace it and silently kill telemetry (see the note above it).
+  . "$R/scripts/lib/selfapply.sh"
+  sa_begin sync "${NB_SA_WAIT:-300}" 2>/dev/null \
+    || printf "${c_y}a memory pass held the lock past the wait — pushing anyway (may include in-flight edits)${c_0}\n"
   cd "$R" && git add -A && git commit -qm "${1:-chore: sync nathanbot}" 2>/dev/null
   # Report WHY, not just "not synced". These used to share one || branch, so an
   # expired credential, a dead network and a rejected non-fast-forward all
@@ -800,6 +818,15 @@ cmd_brief() {
     esac
     local free; free=$(df -h / | tail -1 | awk '{print $4}')
     printf -- "- disk free: %s\n" "$free"
+
+    # Job search. The line that matters is ACCEPTED-BUT-NEVER-MESSAGED: tracking
+    # who you invited on LinkedIn is easy, noticing they accepted and you never
+    # followed up is what actually loses referrals. Read-only; the owner edits the sheet.
+    local js; js=$(python3 "$R/scripts/google/jobsearch.py" due 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+    if [ -n "$js" ] && ! printf '%s' "$js" | grep -q "nothing due"; then
+      printf -- "\n## Job search\n"
+      printf '%s\n' "$js" | sed '/^[[:space:]]*$/d;s/^[[:space:]]*/- /'
+    fi
   } > "$out"
 
   $quiet || cat "$out"
@@ -1099,7 +1126,7 @@ _RC_MEANS=""      # set by the dispatch arms below where non-zero is not a failu
 # the JSON either.
 _SUB=""
 case "$_CMD" in
-  mail|cal|crm|wiki|project|proj|profile|perms|permissions|schedule)
+  mail|cal|crm|apps|drive|wiki|project|proj|profile|perms|permissions|schedule)
     case "${2:-}" in
       [a-z]*) [ "${#2}" -le 20 ] && _SUB="$(printf '%s' "$2" | tr -cd 'a-z0-9_-')" ;;
     esac ;;
@@ -1142,6 +1169,8 @@ case "${1:-}" in
   audit)  cmd_audit ;;
   usage)    shift; python3 "$R/scripts/usage.py" "$@" ;;
   writeback|wb) shift; "$R/scripts/writeback.sh" "$@" ;;
+  dream)    shift; "$R/scripts/dream.sh" "$@" ;;
+  skills)   shift; "$R/scripts/skills.sh" "$@" ;;
   recall)   shift; python3 "$R/scripts/recall.py" "$@" ;;
   # stale exits 3 when it FINDS drift — a result, not a crash. It still exits 1
   # on a real traceback, and that must stay legible as a failure, so only 3 is
@@ -1162,6 +1191,10 @@ case "${1:-}" in
   perms|permissions) shift; "$R/scripts/permissions.sh" "$@" ;;
   project|proj) shift; "$R/scripts/project.sh" "$@" ;;
   _logdecision) shift; _log_decision "$1" "$2" ;;
+  # Every generator interpolates a starting id into its prompt. They all used to
+  # call next_id() because they lived in this file; dream.sh and skills.sh do not,
+  # and a second implementation of id allocation is how ids get reused.
+  _nextid) next_id ;;
   discuss|talk) shift; "$R/scripts/discuss.sh" "$@" ;;
   learn)    shift; "$R/scripts/learn.sh" "$@" ;;
   feedback) shift; cmd_feedback "$@" ;;
@@ -1173,10 +1206,10 @@ case "${1:-}" in
   telegram|tg) shift; python3 "$R/scripts/telegram/listen.py" "$@" ;;
   activity|ship|shipped) shift; python3 "$R/scripts/proactive/repo-activity.py" --report "$@" ;;
   news) shift; "$R/scripts/news.sh" "$@" ;;
+  ideas|idea) shift; "$R/scripts/ideas.sh" "$@" ;;
   study)    shift; "$R/scripts/study.sh" "$@" ;;
   wiki)     shift; "$R/scripts/wiki.sh" "$@" ;;
   today)    open "obsidian://daily" 2>/dev/null || open -a Obsidian 2>/dev/null || die "Obsidian not found" ;;
-  digest)   shift; "$R/scripts/digest.sh" "$@" ;;
   groom)    shift; "$R/scripts/groom.sh" "$@" ;;
   server|api|ui) shift
             # headless brain/API — no dashboard anymore; the phone (Telegram) talks to this.
@@ -1194,6 +1227,8 @@ case "${1:-}" in
             esac ;;
   cal)      shift; python3 "$R/scripts/google/gcalendar.py" "$@" ;;
   crm)      shift; python3 "$R/scripts/google/sheets.py" "$@" ;;
+  apps)     shift; python3 "$R/scripts/google/jobsearch.py" "$@" ;;
+  drive)    shift; python3 "$R/scripts/google/drive.py" "$@" ;;
   ""|-h|--help|help) usage ;;
   # a typo, or a command that was removed — 10 of the 52 historical non-zero
   # lines landed here and were indistinguishable from a crash

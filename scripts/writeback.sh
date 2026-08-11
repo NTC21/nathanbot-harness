@@ -55,7 +55,13 @@ NB_CHECK=1 "$R/bin/claudew" >/dev/null 2>&1 || { echo "claude CLI not found" >&2
 
 . "$R/scripts/lib/selfapply.sh"
 printf "%sWriting back %s...%s\n" "$B" "$DAY" "$X"
-sa_begin
+# Named, waited, and RELEASED. This used to be a bare `sa_begin` with no trap:
+# the lock outlived every run, and because this script is a child of bin/nb its
+# EXIT trap could not help. Every later pass then had to clear a dead-pid lock
+# and said so out loud. `nb dream` runs 15 minutes after this one, so the leak
+# stopped being cosmetic.
+sa_begin writeback "${NB_SA_WAIT:-300}" || exit "$SA_EX_LOCKED"
+trap 'sa_release' EXIT INT TERM
 
 # Tool scope is Read/Write/Edit ONLY — deliberately no Bash and no WebFetch.
 # The evidence below contains tool inputs from sessions that ingested email and

@@ -49,7 +49,16 @@ Give him a brief he reads in 30 seconds:
 Format each line exactly like:
 Headline here - why it matters (https://source-url)"
 
-out="$(NB_JOB=news "$CLAUDE" -p "$prompt" --allowedTools "WebSearch" "WebFetch" "Read" 2>&1)"
+# stdout ONLY, and the exit code is checked. This used to capture 2>&1 and ignore
+# rc, so claudew's own stderr line — "claudew: Claude usage is capped — this run did
+# not complete." — became the body of the 08:00 📰 brief. A failed run must fail, not
+# get delivered as news.
+out="$(NB_JOB=news "$CLAUDE" -p "$prompt" --allowedTools "WebSearch" "WebFetch" "Read")"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "news.sh: claudew exited $rc — no brief produced, nothing delivered." >&2
+  exit "$rc"
+fi
 
 # strip any stray ANSI, trim
 out="$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g')"

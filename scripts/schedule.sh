@@ -7,11 +7,13 @@
 #
 # Jobs installed:
 #   brief   daily  07:30   — reads + reports. Never changes anything.
+#   dream   daily  22:35   — consolidates what the owner SAID into memory.
 #   tidy    weekly Sun 09:00 — REPORT ONLY by default (no --apply).
 #   evolve  weekly Mon 08:00 — proposes improvements as needs-decision tasks.
+#   skills  weekly Mon 09:00 — proposes a skill from repeated workflows. Never installs one.
 #   scout   monthly 1st 08:30 — researches new tools, writes wiki pages.
 #
-# The 22:45 sync job commits+pushes THIS repo. Nothing pushes project code or merges. There is
+# The 23:00 sync job commits+pushes THIS repo. Nothing pushes project code or merges. There is
 # no scheduled execution of tasks at all — `nb run` was retired 2026-07-26; work happens in a
 # Claude Code session.
 set -euo pipefail
@@ -85,16 +87,30 @@ case "${1:-install}" in
   install)
     echo "Installing nathanbot scheduled jobs..."
     mkjob brief  7  30 ""                              "brief --quiet --deliver --speak"
-    mkjob digest 22  0 ""                              "digest"
-    # 22:20 — after digest (22:00) so the day's journal is already folded in,
-    # before sync (22:45) so the note rides the same night's push.
     mkjob writeback 22 20 ""                           "writeback"
-    mkjob sync   22 45 ""                              "sync"
+    # 22:35 — AFTER writeback, which refreshes the recall index and writes the
+    # day's '## auto' note that dream reads as context. Before sync, so the whole
+    # night rides one push.
+    #
+    # Shipped as --propose-only ON PURPOSE. Dream can write workspace memory
+    # unattended, but it should earn that first: for now every finding arrives as
+    # a needs-decision task, so the owner reads a week of them in `nb decide` and
+    # sees whether they are the lines he would have written. Drop the flag when
+    # they are. The approve/drop ratio lands in .decisions.jsonl, which `nb learn`
+    # already reads — so the trust period is measurable, not a feeling.
+    mkjob dream  22 35 ""                              "dream --propose-only"
+    # 23:00, not 22:45: `nb sync` does `git add -A && commit && push` and takes NO
+    # lock, so whatever is mid-write when it fires gets pushed half-done. Dream
+    # needs the same 25-minute margin writeback has.
+    mkjob sync   23  0 ""                              "sync"
     mkjob tidy   9   0 "    <key>Weekday</key><integer>0</integer>" "tidy"          0
     mkjob evolve 8   0 "    <key>Weekday</key><integer>1</integer>" "evolve --apply" 1
     mkjob groom  9  30 "    <key>Weekday</key><integer>0</integer>" "groom --apply"  0
     mkjob learn  8  30 "    <key>Weekday</key><integer>1</integer>" "learn --apply"  1
     mkjob scout  8  30 "    <key>Day</key><integer>1</integer>"     "scout"          - 1
+    # Mon 09:00 — after learn (08:30). All three Monday passes take the same
+    # global self-mod lock, and rundue catch-up fires them back-to-back.
+    mkjob skills 9   0 "    <key>Weekday</key><integer>1</integer>" "skills"         1
     # watcher runs on a 2-hour interval (not a clock time); watch.sh self-mutes 23:00–07:00.
     # Deliberately slow: the owner finds frequent ambient pings annoying.
     if paused watch; then echo "  skipped (paused): watch"; else
@@ -120,19 +136,20 @@ EOF
     echo
     echo "Done. nathanbot now runs on its own:"
     echo "  brief   daily 07:30      (notification + tasks/.brief-*.md)"
-    echo "  digest  daily 22:00      (daily notes -> tasks + wiki facts)"
     echo "  watch   every 2 hours    (ambient: meetings, stale repos, VIP mail)"
     echo "  tidy    Sundays 09:00    (report only)"
     echo "  evolve  Mondays 08:00    (--apply: auto-fixes the safe tier, then proposes)"
     echo "  learn   Mondays 08:30    (--apply: model-of-the owner edits from explicit feedback)"
     echo "  groom   Sundays 09:30    (--apply: archives stale tasks)"
     echo "  wrback  daily 22:20      (day's agent activity -> a dated session note)"
-    echo "  sync    daily 22:45      (commit + push THIS repo)"
+    echo "  dream   daily 22:35      (--propose-only: what the owner SAID -> needs-decision tasks)"
+    echo "  skills  Mondays 09:00    (proposes a skill from repeated workflows; never installs)"
+    echo "  sync    daily 23:00      (commit + push THIS repo)"
     echo "  scout   1st of month     (new tools -> wiki pages)"
     echo
     echo "  This list is hand-maintained and drifts. 'nb schedule status' is the truth."
     echo
-    echo "The 22:45 sync job commits+pushes THIS repo; nothing pushes project code or merges."
+    echo "The 23:00 sync job commits+pushes THIS repo; nothing pushes project code or merges."
     echo "Nothing executes tasks — 'nb run' was retired 2026-07-26. Work happens in a session."
     ;;
   status)
@@ -195,6 +212,20 @@ EOF
   install-news)
     # Daily tech/AI news brief pushed to your phone at 8:00.
     mkjob news 8 0 "" "news --deliver"
+    ;;
+  install-ideas)
+    # Video ideas for the personal brand, pushed to Telegram at 08:45.
+    #
+    # 08:45 and not earlier: it lands AFTER brief (07:30) and news (08:00), so the
+    # morning push is one sequence instead of three claudew runs racing. It also
+    # dodges the 08:30 slot, where learn (Mondays) and scout (1st of month) already
+    # sit. Nothing here takes the self-mod lock, but overlapping model runs are
+    # still a bad neighbour.
+    #
+    # The 24h window means a morning run reads YESTERDAY's work — that is the
+    # point, and gather.py walks every calendar day the window touches so the
+    # transcript digest doesn't come back empty at 08:45.
+    mkjob ideas 8 45 "" "ideas --deliver"
     ;;
   install-nudge)
     # Proactive calendar heads-ups. Runs every 10 min; nudge.py dedups + is silent
@@ -262,13 +293,13 @@ EOF
   remove)
     # server and skhd are installed by hand (no generator in this repo), so they
     # survived `remove` and kept running. ccr dropped — nothing ever installed it.
-    for n in brief digest sync watch tidy evolve scout groom learn jarvis voicebox \
-             telegram nudge activity news writeback server skhd; do
+    for n in brief digest dream skills sync watch tidy evolve scout groom learn jarvis voicebox \
+             telegram nudge activity news ideas writeback server skhd; do
       p="$LA/$PREFIX.$n.plist"
       # || true: under set -e a plist that exists but isn't loaded must not abort the loop
       [ -e "$p" ] && { launchctl unload "$p" 2>/dev/null || true; }
       rm -f "$p" && echo "  removed: $n"
     done
     ;;
-  *) echo "usage: nb schedule [install|install-jarvis|install-voicebox|install-telegram|install-nudge|install-news|status|remove]"; exit 1 ;;
+  *) echo "usage: nb schedule [install|install-jarvis|install-voicebox|install-telegram|install-nudge|install-news|install-ideas|status|remove]"; exit 1 ;;
 esac

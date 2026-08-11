@@ -142,4 +142,49 @@ if [ -n "$hit" ]; then
   echo "claudew: Claude usage is capped — this run did not complete. Retry after the reset." >&2
 fi
 
+# Expired auth, detected 2026-08-06. A cap is temporary and fixes itself; expired
+# OAuth NEVER does, and it kills every scheduled AI pass at once -- evolve, learn,
+# skills, dream, ideas, news, writeback all route through this file. On 2026-08-03
+# the session expired and the passes went dark for three days while their launchd
+# jobs kept exiting and nothing said why: `nb usage --failures` showed "crashed",
+# which reads as a bug in ideas.sh rather than one login.
+#
+# Deliberately NOT folded into LIMIT_RE above: "retry after the reset" is the wrong
+# instruction here and would send him waiting for a cap that is not the problem.
+# Only the owner can fix this -- OAuth is interactive and no agent can complete it.
+AUTH_RE="${NB_CLAUDE_AUTH_REGEX:-OAuth session expired|Failed to authenticate|Invalid API key|authentication_error|Please run .?claude login}"
+if [ "$rc" -ne 0 ] && grep -qiE "$AUTH_RE" "$out" "$err" 2>/dev/null; then
+  printf '{"ts":"%s","cmd":"claude-auth-expired","dur_s":0,"rc":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc" >> "$R/tasks/.telemetry.jsonl" 2>/dev/null || true
+  {
+    echo "claudew: CLAUDE LOGIN HAS EXPIRED — this run did nothing, and neither will any"
+    echo "         other scheduled pass (evolve, learn, skills, dream, ideas, news, writeback)."
+    echo "         This does not heal on its own and no agent can fix it. Run: claude login"
+  } >&2
+fi
+
+# A run that dies mid-response, detected 2026-08-10. This is the third failure
+# shape and the only SILENT one: the CLI prints "API Error: Connection closed
+# mid-response", exits 0, and the wrapper script treats the pass as a success.
+# On 2026-08-10 both evolve and learn ended this way -- learn had written
+# "Both persisted. Now trim OVERVIEW to bound." and then never trimmed it. The
+# pass committed anyway. Half-applied self-modification that reports success is
+# strictly worse than a pass that fails loudly, because the next pass starts
+# from a state nobody knows is partial.
+#
+# Detected on OUTPUT, not rc, precisely because rc is 0 here -- a cap or an
+# expired login at least exits non-zero.
+#
+# NOT retried on purpose. These passes commit, and dream/evolve/learn are not
+# idempotent: re-running one that already wrote half its edits can apply them
+# twice. Surfacing it so the next run (or the owner) sees a partial pass is the
+# conservative half of the fix; making the passes resumable is a bigger change
+# than a wrapper should make.
+TRUNC_RE="${NB_CLAUDE_TRUNC_REGEX:-API Error: Connection closed mid-response|Connection closed mid-response}"
+if grep -qiE "$TRUNC_RE" "$out" "$err" 2>/dev/null; then
+  printf '{"ts":"%s","cmd":"claude-truncated","dur_s":0,"rc":%s,"rc_means":"truncated"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rc" >> "$R/tasks/.telemetry.jsonl" 2>/dev/null || true
+  echo "claudew: run ended MID-RESPONSE — whatever it was doing is half-done. Check what it wrote before trusting it." >&2
+fi
+
 cat "$out"; cat "$err" >&2; exit "$rc"

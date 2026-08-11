@@ -103,8 +103,16 @@ def apply(path):
     for s in skills:
         src = os.path.join(R, "skills", s)
         dst = os.path.join(sk_dir, s)
-        if os.path.isdir(src) and not os.path.exists(dst):
-            os.symlink(src, dst)
+        # lexists, not exists: exists() follows the link, so a DANGLING link whose
+        # name is still profiled looked absent, os.symlink raised FileExistsError,
+        # and — sync has no try/except around apply() — every remaining project
+        # went unconfigured. Unlink and relink rather than skip, so a link pointing
+        # at the wrong place is repaired too.
+        if os.path.isdir(src):
+            if os.path.islink(dst):
+                os.unlink(dst)
+            if not os.path.lexists(dst):
+                os.symlink(src, dst)
 
     # generated guidance file — capabilities explain themselves to the agent
     gp = os.path.join(cdir, "CAPABILITIES.md")

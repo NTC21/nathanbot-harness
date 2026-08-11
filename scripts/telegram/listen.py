@@ -208,17 +208,39 @@ def handle_callback(cb):
         send("Cancelled — nothing changed.")
 
 
-def _load_offset():
+# A message may be attempted this many times before it is abandoned and the offset
+# advances past it. Without a cap, one update that reliably crashes the handler is a
+# poison pill: launchd restarts (KeepAlive), the same update is fetched again, and the
+# bridge never reaches the messages behind it.
+MAX_ATTEMPTS = 3
+
+
+def _load_state():
+    """Read {offset, attempts}. Accepts the old bare-integer file it replaces."""
+    st = {"offset": 0, "attempts": {}}
     try:
-        return int(STATE.read_text().strip())
+        raw = STATE.read_text().strip()
     except Exception:
-        return 0
+        return st
+    try:
+        st["offset"] = int(raw)          # legacy format: just the offset
+        return st
+    except ValueError:
+        pass
+    try:
+        d = json.loads(raw)
+        st["offset"] = int(d.get("offset", 0))
+        st["attempts"] = {str(k): int(v) for k, v in (d.get("attempts") or {}).items()
+                          if int(k) >= st["offset"]}  # anything below offset is done
+    except Exception:
+        pass
+    return st
 
 
-def _save_offset(n):
+def _save_state(st):
     try:
         STATE.parent.mkdir(parents=True, exist_ok=True)
-        STATE.write_text(str(n))
+        STATE.write_text(json.dumps({"offset": st["offset"], "attempts": st["attempts"]}))
     except Exception:
         pass
 
@@ -226,9 +248,11 @@ def _save_offset(n):
 def whoami():
     print("Message your bot now — waiting for the next update…", file=sys.stderr)
     while True:
-        ups = tg("getUpdates", timeout=25, offset=_load_offset()) or []
+        st = _load_state()
+        ups = tg("getUpdates", timeout=25, offset=st["offset"]) or []
         for u in ups:
-            _save_offset(u["update_id"] + 1)
+            st["offset"] = u["update_id"] + 1
+            _save_state(st)
             m = u.get("message") or u.get("edited_message")
             if m:
                 c = m.get("chat", {})
@@ -240,13 +264,45 @@ def whoami():
 
 def loop(once=False):
     while True:
-        ups = tg("getUpdates", timeout=25, offset=_load_offset()) or []
+        st = _load_state()
+        ups = tg("getUpdates", timeout=25, offset=st["offset"]) or []
         for u in ups:
-            _save_offset(u["update_id"] + 1)
-            if "message" in u:
-                handle_message(u["message"])
-            elif "callback_query" in u:
-                handle_callback(u["callback_query"])
+            uid, nxt = str(u["update_id"]), u["update_id"] + 1
+
+            if "message" not in u:
+                # callback_query (and anything else) advances BEFORE handling, on
+                # purpose. handle_callback's _SEND_TOKENS.pop is single-use, so a
+                # replayed approval cannot double-send — it can only report "Not
+                # sent" for a send that did go out, which is worse than dropping it.
+                st["offset"] = nxt
+                st["attempts"].pop(uid, None)
+                _save_state(st)
+                if "callback_query" in u:
+                    handle_callback(u["callback_query"])
+                continue
+
+            # Messages advance AFTER the handler returns. The offset used to be saved
+            # first, so a crash, an OOM, a launchd reload or a killed 900s api_post
+            # lost the message permanently and silently — and this job is KeepAlive,
+            # so the restart that hides the crash is automatic.
+            tries = st["attempts"].get(uid, 0)
+            if tries >= MAX_ATTEMPTS:
+                print(f"listen: giving up on update {uid} after {tries} attempts — "
+                      f"advancing past it", file=sys.stderr)
+                st["offset"] = nxt
+                st["attempts"].pop(uid, None)
+                _save_state(st)
+                continue
+
+            # Flushed before the handler: the count has to survive the crash it counts.
+            st["attempts"][uid] = tries + 1
+            _save_state(st)
+
+            handle_message(u["message"])
+
+            st["offset"] = nxt
+            st["attempts"].pop(uid, None)
+            _save_state(st)
         if once:
             return
         if ups == []:

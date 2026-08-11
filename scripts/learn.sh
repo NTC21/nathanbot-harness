@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# learn.sh — build a better model of NATHAN from how he actually behaves.
+# learn.sh — build a better model of THE OWNER from how he actually behaves.
 #
 # Distinct from `nb evolve`:
 #   evolve  → improves the SYSTEM (commands, wiring, bugs)
-#   learn   → improves the model of NATHAN (preferences, patterns, priorities)
+#   learn   → improves the model of THE OWNER (preferences, patterns, priorities)
 #
 #   nb learn            analyze behavior, PROPOSE memory updates
 #   nb learn --apply    ALSO auto-apply the safe tier: edits to the model-of-the owner pages
@@ -40,7 +40,7 @@ if F:
     for r in F[-20:]:
         print(f"  [{r.get('source','?')}] {r.get('note','')}")
 else:
-    print("  (none yet — logged via `nb feedback` or auto-detected by digest)")
+    print("  (none yet — logged via `nb feedback` or auto-detected by dream)")
 print()
 
 print("DECISIONS  (%d recorded)" % len(D))
@@ -129,7 +129,7 @@ if [ "${1:-}" = "--apply" ] && [ -z "${NB_OPERATOR:-}" ]; then
   fi
   trap 'sa_release' EXIT INT TERM
   printf "%sApplying explicit feedback to the model of the owner...%s\n" "$B" "$X"
-  NB_JOB=learn-apply "$R/bin/claudew" -p "You are nathanbot updating its model of NATHAN — apply ONLY what he explicitly said.
+  NB_JOB=learn-apply "$R/bin/claudew" -p "You are nathanbot updating its model of THE OWNER — apply ONLY what he explicitly said.
 
 SOURCE OF TRUTH — his explicit corrections (tasks/.feedback.jsonl):
 $(tail -40 "$FB" 2>/dev/null || echo '(none)')
@@ -143,7 +143,7 @@ No speculation, no pattern-derived claims — explicit statements only. If every
 already reflected, change nothing. Print one line per edit." \
     --permission-mode acceptEdits \
     --allowedTools "Read" "Edit" "Write" "Grep" 2>&1 | tail -10
-  sa_commit '^(wiki/pages/nathan\.md|shared-memory/OVERVIEW\.md)$' \
+  sa_commit '^(wiki/pages/owner\.md|shared-memory/OVERVIEW\.md)$' \
     "auto-learn: encode explicit feedback into the model of the owner
 
 Applied by 'nb learn --apply' (feedback-traceable edits only). Not pushed."
@@ -157,7 +157,7 @@ fi
 
 printf "%sLearning from your behavior...%s\n" "$B" "$X"
 
-NB_JOB=learn "$R/bin/claudew" -p "You are nathanbot building a better model of NATHAN — not improving your own code.
+NB_JOB=learn "$R/bin/claudew" -p "You are nathanbot building a better model of THE OWNER — not improving your own code.
 (That's \`nb evolve\`. This is different: learn about the PERSON.)
 
 BEHAVIORAL EVIDENCE (what he actually did, not what he said):

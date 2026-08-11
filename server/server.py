@@ -753,7 +753,7 @@ class H(http.server.SimpleHTTPRequestHandler):
                 else:
                     out = (out + f"\n\n(Couldn't stage that block: {prep.get('error')})").strip()
             out = _CAL_MARKER.sub("", out).strip()
-            hist += [{"role": "nathan", "text": msg}, {"role": "nathanbot", "text": out}]
+            hist += [{"role": "owner", "text": msg}, {"role": "nathanbot", "text": out}]
             chat_save(hist)
             resp = {"ok": True, "reply": out}
             if send_request:

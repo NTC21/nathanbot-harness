@@ -40,7 +40,7 @@ There's no dashboard to open. The interface is your pocket — it comes to you.
   real events; approve to write them.
 - **Capture anywhere** — `nb add "thought"`, a text, or a voice note. AI triages everything into
   readable tasks; you never write frontmatter.
-- **Ambient watcher + nightly digest + weekly self-improvement** — imminent meetings, dirty
+- **Ambient watcher + nightly consolidation + weekly self-improvement** — imminent meetings, dirty
   repos, VIP email; mines your notes into tasks/wiki; `evolve`/`learn` improve the system within
   hard guardrails (allowlisted paths, secret scans, local-only commits).
 
@@ -75,7 +75,7 @@ mkdir -p ~/.secrets/telegram && chmod 700 ~/.secrets/telegram
 printf '%s' '<BOTFATHER_TOKEN>' > ~/.secrets/telegram/bot_token && chmod 600 ~/.secrets/telegram/bot_token
 nb tg --whoami                  # message your bot -> it prints your chat id to save
 
-# 5. make it ambient (launchd: brief, digest, watcher, phone bridge, proactive nudges)
+# 5. make it ambient (launchd: brief, dream, watcher, phone bridge, proactive nudges)
 nb schedule install
 nb schedule install-telegram    # always-on two-way phone bridge
 nb schedule install-nudge       # proactive calendar heads-ups
@@ -97,7 +97,7 @@ Say hello: text your bot, or `nb brief --speak`.
 | `scripts/proactive/nudge.py` | Pings you before calendar events. Runs every 10 min, dedups. |
 | `server/server.py` | The **headless brain/API** (stdlib HTTP + JSON on :7777). The CLI, the phone bridge, and voice all hit the same operator here. No dashboard — this is backend only. |
 | `scripts/speak.sh` | Voice chain: Fish Audio → edge-tts → Voicebox → ElevenLabs → OpenAI → `say`. First available backend wins; every reply is sanitized to sound human. |
-| `scripts/schedule.sh` | Installs/removes all launchd jobs (brief, digest, watcher, telegram, nudge, ...). |
+| `scripts/schedule.sh` | Installs/removes all launchd jobs (brief, dream, watcher, telegram, nudge, ...). |
 | `prompts/operator.md` | The operator's system prompt — the personality and the rules. |
 | `tasks/`, `wiki/`, `workspace-*/` | The markdown brain. Tasks with frontmatter, an Obsidian-compatible wiki, per-domain memory. |
 
@@ -140,7 +140,7 @@ The brain, the CLI, and the **phone bridge** are portable; the ambient schedulin
 
 | Works on Windows (via **WSL**) | macOS-only today |
 |---|---|
-| `nb` CLI, tasks, wiki, triage, digest | launchd schedules (use `cron`/Task Scheduler in WSL) |
+| `nb` CLI, tasks, wiki, triage, dream | launchd schedules (use `cron`/Task Scheduler in WSL) |
 | **Telegram bridge + voice** (`nb tg`) — your phone works anywhere | local voice playback (`afplay`/`say`; swap any CLI player) |
 | `claudew` agent wrapper | menu-bar + global hotkeys (SwiftBar/skhd) |
 | Google mail/calendar scripts | |

@@ -73,6 +73,15 @@ map it to the command and run it. Confirm the interpretation only if ambiguous.
 | "what do you know about me / this" | read the relevant memory, answer |
 | "learn from how I work" | `nb learn` |
 | "clean up my machine" | `nb tidy` (report first) |
+| "did we ever...", "find where I...", "what did I do about X" | `nb recall "<query>"` (FTS over transcripts + commits) |
+| "consolidate what I said", "remember today" | `nb dream` (proposes wiki edits; `--dry` to preview) |
+| "what should I automate", "I keep doing this manually" | `nb skills` (proposes only — never installs) |
+| "read/ingest this article", "learn this page" | `nb study <url\|file>` |
+| "give me video/content ideas" | `nb ideas` (`--save <n>` appends to the Idea Bank) |
+| "what's on my plate right now", "anything urgent" | `nb watch` |
+| "update the CRM", "who's overdue for follow-up" | `nb crm due\|show\|append\|touch` |
+| "how's the job search", "who accepted but never got a message" | `nb apps due\|show` |
+| "put this in a Google Doc/Sheet", "pull that doc down" | `nb drive push\|upload\|pull\|show\|list` (identity-checked) |
 
 Type inference for new projects: mentions of mobile/app/expo → expo; web/site/landing/dashboard →
 next; script/ML/data → python; else node. State the type you picked. Autonomy defaults to
@@ -88,11 +97,13 @@ When the user asks for planning, strategy, business, content, coding, research, 
 1. Read `shared-memory/OVERVIEW.md` for high-level operator context and rules. It is bounded
    (kept under ~2000 chars) and meant to be loaded every session.
 2. Read the relevant workspace `MEMORY.md`:
-   - `workspace/MEMORY.md` — general: personal queue, recaps, misc.
    - `workspace-admin/MEMORY.md` — finances, receipts, travel, admin.
    - `workspace-coding/MEMORY.md` — your apps, sites, infra.
    - `workspace-creative/MEMORY.md` — content, socials, funnels, media.
    - `workspace-research/MEMORY.md` — market research, leads intel, competitor data.
+
+   These four ship as starters. Add or rename workspaces to match your own domains — nothing
+   hardcodes this list.
 3. Read `wiki/index.md` to find durable background pages, then open only the specific pages needed. `wiki/storage-policy.md` is the routing contract.
 4. For recent context, skim the latest dated files under the relevant `workspace-*/memory/` folder. The root `memory/` folder is a machine-local index — not for reading.
 
@@ -119,19 +130,34 @@ How work done in one harness becomes visible to the others:
 ## Repo Map
 
 - `shared-memory/` — operator overview + rules (read first).
-- `workspace*/` — per-domain memory (MEMORY.md = curated, memory/ = dated notes).
+- `workspace-*/` — per-domain memory (MEMORY.md = curated, memory/ = dated notes).
 - `wiki/` — long-term knowledge graph (Obsidian-readable). Canonical shared memory. `pages/owner.md` is the self-page.
 - `bin/nb` — the CLI (`nb add`, `nb next`, `nb brief`, `nb mail`, `nb project`, ...).
-- `ui/` — the local web dashboard.
+- `bin/claudew` — the wrapper every scheduled job calls the `claude` CLI through (logging, job tagging).
 - `config/` — configuration; `*.example.json` templates ship in the repo, real `*.json` are gitignored.
-  - `config/paths.json` — machine-abstract paths (keeps repo portable across machines).
   - `config/accounts.json` — email identities (read before any outbound action).
   - `config/projects.json` — per-project autonomy levels.
   - `config/permissions.json` — enforced permission posture.
-- `scripts/` — automation helpers.
-- `tasks/`, `cron/`, `flows/` — standing tasks + schedules (for an always-on box).
-- `.claude/` — skills, agents, settings for Claude harnesses.
+  - `config/profiles.json` — which capability layers compose onto which project.
+- `capabilities/` — the capability layers themselves (one YAML per practice/stack), composed into
+  a project's `.claude/CAPABILITIES.md` by `nb profile sync`.
+- `scripts/` — automation helpers. `scripts/lib/` is shared code, not entry points.
+- `claude-hooks/` — PreToolUse guards. These are what make the system safe to run unattended;
+  install them with `claude-hooks/install.sh`.
+- `prompts/operator.md` — the operator prompt: how a harness routes an arbitrary request.
+- `server/server.py` — the headless brain/API the Telegram bridge and CLI talk to.
+- `tasks/` — the queue. `inbox.md` is raw capture, `open/` and `done/` are filed tasks,
+  `logs/` (created on first run) holds each scheduled job's output.
+- `docs/` — setup guides: `nb.md` (concepts; `nb help` is the authoritative command list),
+  `telegram.md`, `google-direct-auth.md`.
+- `skills/` — reference skills a harness can load on demand (stack docs, not personal workflow).
+- `media/` — scratch dir for generated audio/images; gitignored contents.
+- `.claude/agents/` — specialist subagent definitions for Claude harnesses.
 
 ## Machine portability
 
-No hardcoded machine paths in tracked files. Machine specifics live in `.env` (untracked) + `config/paths.json`. Secrets live in `~/.secrets/`, never in the repo. Root `memory/` index is machine-local and gitignored. To add an always-on machine later: clone repo, copy the example configs, set its `.env`, run the harness.
+No hardcoded machine paths in tracked files. Machine specifics live in `.env` (untracked); every
+script resolves its own root from `$0`/`BASH_SOURCE`, which is what actually makes the repo
+portable. Secrets live in `~/.secrets/`, never in the repo. Root `memory/` index is machine-local
+and gitignored. To add an always-on machine later: clone the repo, copy the example configs, set
+its `.env`, run the harness.

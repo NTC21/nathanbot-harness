@@ -21,6 +21,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import auth  # noqa: E402
 
 
+def _usage(msg):
+    """Bad invocation -- exit 2, the code argparse itself uses for this.
+
+    `sys.exit(msg)` exits 1, and scripts/lib/telemetry.py cannot tell a 1 that
+    means "you forgot --account" from a 1 that means a traceback. Everything
+    reachable through `nb` treats 2 as a usage error (scripts/wiki.sh already
+    did), so hand-rolled argument checks must agree with argparse rather than
+    inventing a second convention.
+    """
+    print(msg, file=sys.stderr)
+    raise SystemExit(2)
+
+
 def unattended():
     """True when nobody is approving actions one by one.
 
@@ -49,14 +62,18 @@ def _fmt(ev):
     return st, ev.get("summary", "(no title)"), ev.get("location", "")
 
 
-def _window(days):
+def _window(days, past=False):
+    # past=True looks BACKWARD (now-days .. now) instead of forward. Needed by
+    # `nb ideas`, which asks what actually happened today, not what is coming.
     now = datetime.now(timezone.utc)
+    if past:
+        return (now - timedelta(days=days)).isoformat(), now.isoformat()
     return now.isoformat(), (now + timedelta(days=days)).isoformat()
 
 
-def list_events(key, days=7, query=None):
+def list_events(key, days=7, query=None, past=False):
     service, email = svc(key)
-    tmin, tmax = _window(days)
+    tmin, tmax = _window(days, past)
     kw = dict(calendarId="primary", timeMin=tmin, timeMax=tmax,
               singleEvents=True, orderBy="startTime", maxResults=50)
     if query:
@@ -85,9 +102,10 @@ def cmd_search(a):
 def cmd_agenda(a):
     keys = list(auth.accounts_cfg()) if a.all else [a.account]
     rows = []
+    past = getattr(a, "past", False)
     for k in keys:
         try:
-            _email, items = list_events(k, a.days)
+            _email, items = list_events(k, a.days, past=past)
         except SystemExit:
             continue  # account not authorized — skip silently in --all
         except Exception as e:
@@ -97,7 +115,8 @@ def cmd_agenda(a):
             st, title, loc = _fmt(ev)
             rows.append((st, k, title, loc))
     rows.sort(key=lambda r: r[0])
-    print(f"# Agenda — next {a.days}d — {len(rows)} event(s) across {len(keys)} account(s)")
+    span = f"last {a.days}d" if past else f"next {a.days}d"
+    print(f"# Agenda — {span} — {len(rows)} event(s) across {len(keys)} account(s)")
     for st, k, title, loc in rows:
         print(f"  {st}  [{k}] {title}" + (f"  @ {loc}" if loc else ""))
 
@@ -142,6 +161,108 @@ def cmd_create(a):
     print(f"created ({tz}): {ev.get('htmlLink')}")
     if attendees:
         print(f"  invited: {', '.join(attendees)}")
+
+
+def cmd_find(a):
+    """Locate the MASTER of a recurring series, which is what update/delete need.
+
+    list_events() passes singleEvents=True, so it expands a series into instances and
+    every instance carries a per-occurrence id. Editing one of those changes one day and
+    silently leaves the series alone — the failure mode where "I moved it" is true on
+    Tuesday and false forever after. This asks for masters instead.
+    """
+    service, email = svc(a.account)
+    tmin, tmax = _window(a.days)
+    kw = dict(calendarId="primary", timeMin=tmin, timeMax=tmax,
+              singleEvents=False, maxResults=250)
+    if a.query:
+        kw["q"] = a.query
+    items = service.events().list(**kw).execute().get("items", [])
+    print(f"# {email} — {'recurring masters + single events'}"
+          + (f" matching '{a.query}'" if a.query else "") + f" ({len(items)})")
+    for ev in items:
+        if ev.get("status") == "cancelled":
+            continue
+        st, title, _loc = _fmt(ev)
+        rec = ev.get("recurrence")
+        tag = f"  [{rec[0].replace('RRULE:', '')}]" if rec else ""
+        print(f"  {ev['id']}\n      {st}  {title}{tag}")
+
+
+def _retime(ev, hhmm, minutes):
+    """Rewrite only the clock time of an event, preserving its date and timezone.
+
+    A recurring master's start date anchors the whole series, so replacing start/end
+    wholesale would move the series' first occurrence and re-phase everything after it.
+    Shifting just the time-of-day is what "move Wind Down to 22:30" actually means.
+    """
+    s = ev.get("start", {}).get("dateTime")
+    e = ev.get("end", {}).get("dateTime")
+    if not s or not e:
+        sys.exit("that event is all-day; --time/--duration only apply to timed events")
+    sd = datetime.fromisoformat(s)
+    ed = datetime.fromisoformat(e)
+    dur = minutes if minutes else int((ed - sd).total_seconds() // 60)
+    if hhmm:
+        hh, mm = (int(x) for x in hhmm.split(":"))
+        sd = sd.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    return sd.isoformat(), (sd + timedelta(minutes=dur)).isoformat()
+
+
+def cmd_update(a):
+    # Same hard fuse as create: changing the calendar is the owner's act. An update is if
+    # anything worse than a create — a create that lands wrong is visibly extra, whereas
+    # a bad update silently overwrites something that was already right.
+    if unattended():
+        sys.exit("REFUSED — editing calendar events is disabled for the operator.")
+    if a.yes != a.account:
+        sys.exit(f"Editing an event overwrites what is there. Re-run with:  --yes {a.account}")
+    service, _email = svc(a.account)
+    ev = service.events().get(calendarId="primary", eventId=a.id).execute()
+
+    body = {}
+    if a.title:
+        body["summary"] = a.title
+    if a.time or a.duration:
+        tz = ev.get("start", {}).get("timeZone") or local_tz()
+        s, e = _retime(ev, a.time, a.duration)
+        body["start"] = {"dateTime": s, "timeZone": tz}
+        body["end"] = {"dateTime": e, "timeZone": tz}
+    if a.byday and a.clear_recurrence:
+        sys.exit("--byday and --clear-recurrence contradict each other")
+    if a.byday:
+        days = ",".join(d.strip().upper()[:2] for d in a.byday.split(",") if d.strip())
+        body["recurrence"] = [f"RRULE:FREQ=WEEKLY;BYDAY={days}"]
+    if a.clear_recurrence:
+        # Needed to UNDO a --byday. patch() ignores a key that is absent, so there was no way
+        # to demote a series back to a single event without this — the only escape was delete
+        # plus re-create, which loses the id and any history hanging off it.
+        body["recurrence"] = None
+    if not body:
+        sys.exit("nothing to change — pass --title, --time, --duration, --byday or --clear-recurrence")
+
+    was_st, was_title, _ = _fmt(ev)
+    out = service.events().patch(
+        calendarId="primary", eventId=a.id, body=body, sendUpdates="none").execute()
+    new_st, new_title, _ = _fmt(out)
+    print(f"updated: {was_title}  {was_st}\n     ->  {new_title}  {new_st}")
+    if out.get("recurrence"):
+        print(f"     rrule: {out['recurrence'][0].replace('RRULE:', '')}")
+    print(f"     {out.get('htmlLink')}")
+
+
+def cmd_delete(a):
+    # Deleting a recurring master removes every past and future occurrence, and Google
+    # offers no undo through the API. Fused and account-restating like the rest.
+    if unattended():
+        sys.exit("REFUSED — deleting calendar events is disabled for the operator.")
+    if a.yes != a.account:
+        sys.exit(f"Deleting removes every occurrence and cannot be undone. Re-run with:  --yes {a.account}")
+    service, _email = svc(a.account)
+    ev = service.events().get(calendarId="primary", eventId=a.id).execute()
+    st, title, _ = _fmt(ev)
+    service.events().delete(calendarId="primary", eventId=a.id, sendUpdates="none").execute()
+    print(f"deleted: {title}  ({st})" + ("  [whole series]" if ev.get("recurrence") else ""))
 
 
 def cmd_respond(a):
@@ -319,11 +440,25 @@ def main():
     p = sub.add_parser("list"); p.add_argument("--days", type=int, default=7)
     p = sub.add_parser("search"); p.add_argument("query"); p.add_argument("--days", type=int, default=30)
     p = sub.add_parser("agenda"); p.add_argument("--days", type=int, default=1); p.add_argument("--all", action="store_true")
+    p.add_argument("--past", action="store_true", help="look backward instead of forward (what already happened)")
     p = sub.add_parser("create")
     p.add_argument("--title", required=True); p.add_argument("--start", required=True)
     p.add_argument("--end", required=True); p.add_argument("--attendees"); p.add_argument("--yes")
     p.add_argument("--byday", help="weekly recurrence days, e.g. MO,WE,FR")
     p.add_argument("--rrule", help="raw RRULE body, e.g. FREQ=WEEKLY;BYDAY=TU,TH")
+    p = sub.add_parser("find", help="ids of recurring MASTERS + single events (what update/delete take)")
+    p.add_argument("query", nargs="?"); p.add_argument("--days", type=int, default=30)
+    p = sub.add_parser("update", help="retitle / retime an event or whole series")
+    p.add_argument("--id", required=True); p.add_argument("--title")
+    p.add_argument("--time", help="new start time-of-day HH:MM; date and series anchor preserved")
+    p.add_argument("--duration", type=int, help="new length in minutes")
+    p.add_argument("--byday", help="new weekly recurrence, e.g. MO,TU,WE,TH")
+    p.add_argument("--clear-recurrence", action="store_true",
+                   help="demote a series back to a single event (undoes --byday)")
+    p.add_argument("--yes", required=True, help="must restate the account key")
+    p = sub.add_parser("delete", help="remove an event, or an entire recurring series")
+    p.add_argument("--id", required=True)
+    p.add_argument("--yes", required=True, help="must restate the account key")
     p = sub.add_parser("respond")
     p.add_argument("id"); p.add_argument("--status", required=True, choices=["accepted", "declined", "tentative"])
     p.add_argument("--yes", required=True, help="must restate the account key")
@@ -334,16 +469,22 @@ def main():
     sub.add_parser("today")  # day summary (events + free gaps) across all accounts
     a = ap.parse_args()
 
+    # Exit 2, not 1: these are argparse's job done by hand -- the command worked,
+    # the invocation was wrong. `sys.exit(str)` exits 1, which telemetry cannot
+    # tell apart from a traceback, so every "nb cal list" typed without --account
+    # was logged as a crash and audit section 15 counted it. A failure count that
+    # rises when nothing is broken is one people stop reading.
     if a.cmd == "agenda":
         if not a.all and not a.account:
-            sys.exit("agenda needs --account or --all")
+            _usage("agenda needs --account or --all")
     elif a.cmd in ("planday", "today"):
         pass  # account optional; reads all calendars, writes to personal by default
     elif not a.account:
-        sys.exit("--account required")
+        _usage("--account required")
 
     {"list": cmd_list, "search": cmd_search, "agenda": cmd_agenda,
-     "create": cmd_create, "respond": cmd_respond, "planday": cmd_planday,
+     "find": cmd_find, "create": cmd_create, "update": cmd_update,
+     "delete": cmd_delete, "respond": cmd_respond, "planday": cmd_planday,
      "today": cmd_today}[a.cmd](a)
 
 

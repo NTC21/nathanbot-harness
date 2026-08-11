@@ -1,0 +1,12 @@
+{
+  "_comment": "Sheets nb crm can read/write. Needs the spreadsheets scope — re-run `nb mail login <account>` if calls 403.",
+  "_schema": "Each entry: sheet_id (a NATIVE Google Sheet — the Sheets API cannot edit an uploaded .xlsx blob), tab, account key, and the column letters the escalation ladder writes to.",
+  "crms": {
+    "example": {
+      "sheet_id": "PUT_YOUR_SHEET_ID_HERE",
+      "tab": "Sheet1",
+      "account": "personal",
+      "columns": {"org": "A", "contact": "B", "email": "C", "status": "D"}
+    }
+  }
+}

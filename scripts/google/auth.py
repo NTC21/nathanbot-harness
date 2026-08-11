@@ -24,6 +24,15 @@ SCOPES = [
     # hand-imported once. Tokens issued before this line lack the scope; Sheets
     # calls 403 until `nb mail login <account>` is re-run. Gmail/calendar keep working.
     "https://www.googleapis.com/auth/spreadsheets",
+    # Drive, per-file. Added 2026-08-01 so goals/notes docs can be written to the
+    # account the registry names instead of whatever the claude.ai Drive connector
+    # happens to be signed into — it was a business Workspace, and a personal doc
+    # landed there. See scripts/google/drive.py for the incident and the guard.
+    # drive.file (app-created files only), NOT full drive: this creates and updates
+    # its own documents and has no business reading the rest of the Drive. Tokens
+    # issued before this line lack it; `drive.py` 403s until `nb mail login
+    # <account>` is re-run. Gmail/calendar/sheets keep working.
+    "https://www.googleapis.com/auth/drive.file",
 ]
 
 
@@ -58,7 +67,26 @@ def load_aliases():
 
 
 def get_credentials(key):
-    """Return credentials for an account key, following alias -> owner if needed."""
+    """Return credentials for an account key, following alias -> owner if needed.
+
+    The token is loaded WITHOUT pinning SCOPES, and that is deliberate. Passing the
+    module-level SCOPES here makes the refresh request ask Google for every scope in
+    the list, so the moment a new scope is appended, refreshing an older token fails
+    with `invalid_scope: Bad Request` — not on the call that needs the new scope, but
+    on the next refresh of ANY call. get_credentials is shared by gmail, gcalendar
+    and sheets, so adding the Drive scope on 2026-08-01 would have broken `nb mail`,
+    `nb cal` and `nb crm` on every account as soon as their tokens expired. The
+    2026-07-27 Sheets note claiming "Gmail/calendar keep working" was true only
+    because nothing had expired yet.
+
+    Reading the scopes stored in the token file instead means refresh always asks for
+    exactly what was granted and always succeeds. A call that needs an ungranted
+    scope then fails at the API with a 403, which each helper's _call() turns into
+    "run `nb mail login <account>`" — the error that actually tells you what to do.
+
+    SCOPES stays the request list for login() below, which is the one place it means
+    "what to ask the user to consent to."
+    """
     _need("google.auth")
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -67,7 +95,7 @@ def get_credentials(key):
     tp = token_path(owner)
     if not tp.exists():
         sys.exit(f"'{key}' is not authorized yet. Run:  nb mail login {key}")
-    creds = Credentials.from_authorized_user_file(str(tp), SCOPES)
+    creds = Credentials.from_authorized_user_file(str(tp))
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
         tp.write_text(creds.to_json())

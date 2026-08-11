@@ -1,9 +1,0 @@
-{
-  "_comment": "Machine-abstract paths. Keeps the repo portable. Override per-machine via .env (see .env.example).",
-  "code_root": "${CODE_ROOT}",
-  "secrets_dir": "${SECRETS_DIR}",
-  "drive": {
-    "inbox_folder_id": "${DRIVE_INBOX_FOLDER_ID}",
-    "output_folder_id": "${DRIVE_OUTPUT_FOLDER_ID}"
-  }
-}
